@@ -69,17 +69,130 @@ def extract_txd_file(txd_path, out_dir):
 
 
 def _all_txds(root, cap=20000):
-    """Все .txd в папке модели и подпапках (с лимитом на число файлов)."""
-    out = []
-    seen = 0
-    for dp, _dn, fn in os.walk(root):
-        for f in fn:
-            if f.lower().endswith('.txd'):
-                out.append(os.path.join(dp, f))
+    """[(путь, mtime, размер)] всех .txd в папке модели и подпапках.
+    scandir: на Windows размер и дата приходят вместе со списком (без
+    обращения к каждому файлу — важно на HDD). Папки «<модель>_textures»
+    (наши PNG) не обходятся."""
+    out, seen, stack = [], 0, [root]
+    while stack:
+        d = stack.pop()
+        try:
+            it = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in it:
             seen += 1
             if seen > cap:
                 return out
+            try:
+                if e.is_dir():
+                    n = e.name.lower()
+                    if not (n.endswith('_textures') or n.startswith('_inu_probe')):
+                        stack.append(e.path)
+                elif e.name.lower().endswith('.txd'):
+                    st = e.stat()
+                    out.append((e.path, st.st_mtime, st.st_size))
+            except OSError:
+                continue
     return out
+
+
+def txd_names_from(f, base=0):
+    """Имена текстур TXD, начинающегося в открытом файле f со смещения base
+    (отдельный .txd — 0, запись внутри IMG — её смещение), по ЗАГОЛОВКАМ
+    (seek, без чтения пикселей)."""
+    names = []
+    try:
+        f.seek(base)
+        ct, _cs, _cl = struct.unpack('<III', f.read(12))
+        if ct != 0x16:
+            return []
+        _ct, cs, _cl = struct.unpack('<III', f.read(12))
+        count = struct.unpack('<H', f.read(4)[:2])[0]
+        f.seek(cs - 4, 1)
+        for _ in range(count):
+            hdr = f.read(12)
+            if len(hdr) < 12:
+                break
+            ct, cs, _cl = struct.unpack('<III', hdr)
+            end = f.tell() + cs
+            if ct == 0x15:
+                f.read(12 + 8)                         # struct + platform, filter
+                names.append(f.read(32).split(b'\x00', 1)[0]
+                             .decode('ascii', 'replace'))
+            f.seek(end)
+    except (OSError, struct.error):
+        pass
+    return names
+
+
+def _txd_names(path):
+    """Имена текстур TXD по ЗАГОЛОВКАМ (seek, без чтения пикселей): ядро
+    read_txd_texture_names читает файл целиком — на папке с тысячами .txd
+    это гигабайты на каждый импорт."""
+    try:
+        with open(path, 'rb') as f:
+            return txd_names_from(f, 0)
+    except OSError:
+        return []
+
+
+# кэш имён текстур TXD: {путь: [mtime, размер, [имена]]} — в памяти и в
+# %LOCALAPPDATA%\INU_Tools_Max	xd_names.json: заголовки каждого .txd читаются
+# ОДИН раз (на холодном HDD 3000+ файлов — это ~10 с), дальше — только новые
+# и изменённые
+_MEM = {}
+
+
+def _cache_path():
+    return os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'),
+                        'INU_Tools_Max', 'txd_names.json')
+
+
+def _load_cache():
+    if not _MEM:
+        try:
+            import json
+            with open(_cache_path(), 'r', encoding='utf-8') as f:
+                _MEM.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+    return _MEM
+
+
+def _save_cache():
+    import json
+    p = _cache_path()
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump(_MEM, f)
+        os.replace(p + '.tmp', p)
+    except OSError as e:
+        print("[INU tex] txd cache not saved: %r" % (e,))
+
+
+def _txd_index(root):
+    """[(путь, {имена.lower()})] всех .txd папки модели."""
+    cache = _load_cache()
+    out, dirty = [], False
+    for path, mtime, size in _all_txds(root):
+        c = cache.get(path)
+        if c is None or c[0] != mtime or c[1] != size:
+            c = [mtime, size, [n.lower() for n in _txd_names(path)]]
+            cache[path] = c
+            dirty = True
+        out.append((path, set(c[2])))
+    if dirty:
+        _save_cache()
+    return out
+
+
+def _png_map(out_dir):
+    if not os.path.isdir(out_dir):
+        return {}
+    return {os.path.splitext(f)[0].lower(): os.path.join(out_dir, f)
+            for f in os.listdir(out_dir) if f.lower().endswith('.png')}
 
 
 def build_tex_map(dff_path, needed_names=None):
@@ -90,28 +203,29 @@ def build_tex_map(dff_path, needed_names=None):
     даже если назван не как .dff (rodeo06 → TXD rodeo05_law2).
 
     Плюс подхватываем уже лежащие PNG в <имя>_textures/."""
-    from inu_gta_core.txd import read_txd_texture_names
     root = os.path.dirname(dff_path)
     out_dir = os.path.join(
         root, os.path.splitext(os.path.basename(dff_path))[0] + "_textures")
     needed = set(n.lower() for n in (needed_names or []) if n)
 
-    cands = _all_txds(root)
+    # PNG уже извлечены прошлым импортом — TXD не трогаем
+    have = _png_map(out_dir)
+    if needed and needed <= set(have):
+        print("[INU tex] все %d текстур уже в %s" % (len(needed), out_dir))
+        return have
+
     # (покрытие, путь, имена) по каждому .txd
-    scored = []
-    for txd in cands:
-        try:
-            names = set(n.lower() for n in read_txd_texture_names(txd))
-        except Exception:                              # noqa: BLE001
-            names = set()
-        scored.append((len(needed & names) if needed else 0, txd, names))
+    index = _txd_index(root)
+    cands = [t for t, _n in index]
+    scored = [(len(needed & names) if needed else 0, txd, names)
+              for txd, names in index]
 
     n_txd = 0
     if needed:
         # Жадно: сначала .txd с наибольшим покрытием, добираем пока не
         # закроем все нужные текстуры (модель может тянуть из нескольких).
         scored.sort(key=lambda x: -x[0])
-        remaining = set(needed)
+        remaining = needed - set(have)
         for cov, txd, names in scored:
             if not remaining:
                 break
@@ -133,11 +247,7 @@ def build_tex_map(dff_path, needed_names=None):
                 except Exception:                      # noqa: BLE001
                     pass
 
-    tex_map = {}
-    if os.path.isdir(out_dir):
-        for f in os.listdir(out_dir):
-            if f.lower().endswith('.png'):
-                tex_map[os.path.splitext(f)[0].lower()] = os.path.join(out_dir, f)
+    tex_map = _png_map(out_dir)
     print("[INU tex] .txd найдено=%d, извлечено=%d → %d текстур в %s"
           % (len(cands), n_txd, len(tex_map), out_dir))
     return tex_map

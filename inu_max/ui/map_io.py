@@ -3,8 +3,9 @@
 #   «Object IDE / IPL» (свойства активного объекта),
 #   «ID Manager» (пресеты Model ID).
 # Состав, подписи (англ. из locale/eng.py INU) и условия показа — как в INU,
-# оформление — роллауты Kam's (widgets.py). Операции записи пока заглушки
-# (dispatch → «not implemented»); интерфейсные вещи работают: списки
+# оформление — роллауты Kam's (widgets.py). Вкладка Import работает
+# (ops/map_import.py: Find IMG / Find IDE / Import); остальные операции пока
+# заглушки (dispatch → «not implemented»). Интерфейсные вещи работают: списки
 # файлов, пути, счётчики IDE/IPL и районы (ядро inu_gta_core), статусы.
 
 import math
@@ -382,7 +383,10 @@ class ImportTab(BuildMixin, QtWidgets.QWidget):
                     hl.addWidget(icon_btn('text', "Open in text editor",
                                           lambda p=p: _open_file(p)))
                 lay.addWidget(row)
-        self._btn_import.setEnabled(has_ipl and bool(imgs or g('img_path', '')))
+        # без IPL — импорт «только IDE» сеткой из явно выбранной IDE
+        has_ide = bool(ides or g('ide_path', ''))
+        self._btn_import.setEnabled((has_ipl or has_ide)
+                                    and bool(imgs or g('img_path', '')))
 
 
 class ExportTab(BuildMixin, QtWidgets.QWidget):

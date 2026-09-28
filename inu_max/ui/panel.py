@@ -11,6 +11,8 @@
 # Из порта исключено (Blender-специфично): Texture Bake, живые превью,
 # geo-nodes, рисование по картам — этих секций тут НЕТ намеренно.
 
+import os
+
 from PySide6 import QtWidgets, QtCore
 
 try:
@@ -26,7 +28,8 @@ from . import dff_options as dffo
 # Версия сборки панели. Бампаем при заметных правках UI — печатается в
 # консоль Max при показе, чтобы видеть, что грузится СВЕЖИЙ код (а не старая
 # копия из другого пути / кэша).
-_VERSION = "0.12.0-material"
+from ..version import VERSION as _V, TAG as _T
+_VERSION = "%s-%s" % (_V, _T)
 
 # Окна инструментов (как у Kam's: лаунчер + отдельные окна под задачи).
 # mode -> (заголовок, ширина px; окно расширится, если содержимому тесно).
@@ -43,6 +46,7 @@ _WIN_META = {
     'paths':    ("INU · Paths", 214),
     'radar':    ("INU · X Radar", 214),
     'util':     ("INU · Check", 214),
+    'light':    ("INU · Lighting", 240),
 }
 
 
@@ -155,11 +159,14 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
          'mat': self._sections_mat,
          'fx': self._sections_fx, 'ifp': self._sections_ifp,
          'water': self._sections_water, 'zones': self._sections_zones,
-         'paths': self._sections_paths, 'radar': self._sections_radar}.get(
+         'paths': self._sections_paths, 'radar': self._sections_radar,
+         'light': self._sections_light}.get(
             mode, self._sections_stub)(root)
 
         root.addStretch(1)
         root.addWidget(self._footer(mode != 'launcher'))
+        if mode == 'dff':
+            self.setAcceptDrops(True)       # файлы из Проводника — импорт
 
         # Страховка от обрезки справа: если роллаутам (включая скрытые группы
         # и свёрнутые роллауты) нужно шире, чем даёт окно, — расширяем окно.
@@ -219,7 +226,8 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         s = Rollout("Models", opened=True)
         for label, key in (("DFF IO  (DFF / TXD)", "open:dff"),
                            ("Vehicles", "open:veh"),
-                           ("GTA Material", "open:mat")):
+                           ("GTA Material", "open:mat"),
+                           ("Lighting", "open:light")):
             s.body.addWidget(mk(label, key))
         root.addWidget(s)
         s = Rollout("Map", opened=True)
@@ -233,6 +241,29 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         s.body.addWidget(mk("IFP IO  (Animations)", "open:ifp"))
         s.body.addWidget(mk("Check", "open:util"))
         root.addWidget(s)
+        # установка INU в Max: пакет INU_Tools.bundle (перетаскивание .dff во
+        # вьюпорт, меню INU Tools, лаунчер при запуске, numpy) — inu_max/setup.py
+        s = Rollout("Setup", opened=True)
+        self._setup_lb = self._hint("")
+        s.body.addWidget(self._setup_lb)
+        self._setup_btn = mk("Install INU", "setup:install")
+        self._setup_btn.setToolTip(
+            "Install INU into 3ds Max: drag & drop .dff into the viewport, INU Tools "
+            "menu, launcher at startup, numpy. Needs a 3ds Max restart.")
+        rm = mk("Remove", "setup:remove")
+        rm.setToolTip("Remove INU Tools from 3ds Max (your INU folder is not touched)")
+        s.body.addWidget(FusedBlock([[self._setup_btn], [rm]]))
+        root.addWidget(s)
+        self._refresh_setup()
+
+    def _refresh_setup(self):
+        try:
+            from .. import setup
+            st = setup.status()
+            self._setup_lb.setText(st['text'])
+            self._setup_btn.setText(st['button'])
+        except Exception as e:                         # noqa: BLE001
+            self._setup_lb.setText("Setup: %s" % e)
 
     # ---- окно-заглушка (раздел ещё не реализован) ------------------------
     def _sections_stub(self, root):
@@ -398,6 +429,11 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
                                   'export_pipeline', 'NONE')):
             if group is not None:
                 self._seg_sync(group, self._get(key, dflt))
+        cb = getattr(self, 'cb_auto_txd', None)          # мог поменяться в диалоге сброса
+        if cb is not None:
+            cb.blockSignals(True)
+            cb.setChecked(bool(self._get('auto_txd', True)))
+            cb.blockSignals(False)
         flags = getattr(self, 'flags', None)
         if flags is not None:
             flags.refresh()
@@ -446,11 +482,120 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         if not ok:
             return
         paths = dlg.selected_files()
+        dlg.deleteLater()
+        self._import_paths(paths)
+
+    def _import_paths(self, paths):
+        """Импорт файлов (окно Import или перетаскивание) + отчёт."""
         self._reload_dev()
+        from .. import diag
+        gen = diag.start("import %d file(s)" % len(paths))
+        diag.mark("import start")
         from inu_max.ops.inu_import import import_files
         report = import_files(paths, auto_txd=bool(self._get('auto_txd', True)))
+        diag.mark("import done")
         self._sel_key = object()          # после импорта обновить сводку
-        QtWidgets.QMessageBox.information(self, "INU Tools: Import", report)
+        # отчёт — НЕмодально: модальный цикл Qt поверх Max мешал Max догружать
+        # текстуры вьюпорта (зависание на десятки секунд после импорта)
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information,
+                                    "INU Tools: Import", report,
+                                    QtWidgets.QMessageBox.Ok, self)
+        box.setModal(False)
+        box.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        box.show()
+        diag.mark("report shown")
+        # тики после импорта: задержка между ними = сколько висел Max
+        for sec in (1, 3, 6, 10, 20, 40):
+            QtCore.QTimer.singleShot(sec * 1000, lambda s=sec: diag.generation() == gen
+                                     and diag.mark("tick %ds" % s))
+        QtCore.QTimer.singleShot(41000, lambda: diag.stop(gen))
+
+    # ---- перетаскивание файлов на окно (drop_dff INU) ---------------------
+    # Во вьюпорт Max файлы из Python не принять: сброс туда обрабатывает сам
+    # Max (C++). Поэтому файлы бросают на окно INU.
+    _DROP_EXT = ('.dff', '.txd', '.col', '.cst', '.ide', '.ipl')
+
+    def _drop_paths(self, ev):
+        md = ev.mimeData()
+        if not md.hasUrls():
+            return []
+        return [u.toLocalFile() for u in md.urls() if u.isLocalFile()
+                and os.path.isfile(u.toLocalFile())
+                and os.path.splitext(u.toLocalFile())[1].lower() in self._DROP_EXT]
+
+    def _drop_hint(self, on):
+        hint = getattr(self, '_drop_label', None)
+        if hint is None:
+            hint = QtWidgets.QLabel("Drop to import\n.dff .txd .col .cst .ide .ipl", self)
+            hint.setAlignment(QtCore.Qt.AlignCenter)
+            hint.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+            hint.setStyleSheet("background: rgba(0, 189, 0, 60); color: white;"
+                               "border: 2px dashed #00BD00; font-weight: bold;")
+            self._drop_label = hint
+        hint.setGeometry(self.rect().adjusted(4, 4, -4, -4))
+        hint.setVisible(on)
+        if on:
+            hint.raise_()
+
+    def dragEnterEvent(self, ev):                      # noqa: N802
+        if self._drop_paths(ev):
+            ev.acceptProposedAction()
+            self._drop_hint(True)
+        else:
+            ev.ignore()
+
+    def dragMoveEvent(self, ev):                       # noqa: N802
+        if self._drop_paths(ev):
+            ev.acceptProposedAction()
+
+    def dragLeaveEvent(self, ev):                      # noqa: N802
+        self._drop_hint(False)
+
+    def dropEvent(self, ev):                           # noqa: N802
+        self._drop_hint(False)
+        paths = self._drop_paths(ev)
+        if not paths:
+            return
+        ev.acceptProposedAction()
+        # импорт — ПОСЛЕ возврата из события: Проводник ждёт окончания сброса
+        # и висел бы, пока открыт наш диалог
+        QtCore.QTimer.singleShot(0, lambda p=paths: self._run(
+            lambda: self._on_dropped(p), "Drop import"))
+
+    def _on_dropped(self, paths):
+        """Как drop_dff INU: для DFF — маленький диалог «как импортировать»
+        (vanilla / 2DFX / Auto TXD), затем импорт всех файлов."""
+        if any(p.lower().endswith('.dff') for p in paths):
+            if not self._drop_dialog(len(paths)):
+                return
+        self._import_paths(paths)
+
+    def _drop_dialog(self, count):
+        from .drop_dialog import ask
+        ok = ask(self, count, at_cursor=True)
+        self._sync_from_settings()
+        return ok
+
+    def _do_auto_col(self, mode):
+        """«Generate COL» (auto_col INU): <имя>_COL выделенных моделей."""
+        self._reload_dev()
+        from inu_max.ops import gen_col
+        made = gen_col.generate(mode)
+        self._sel_key = object()
+        if not made:
+            text = "No model for collision: select the models (DFF / LOD)."
+        else:
+            kinds = {'CONVEX': "convex hull", 'BOX': "bounding box"}
+            text = "Collision created: %d\n\n%s" % (len(made), "\n".join(
+                "%s — %s" % (n, kinds.get(u, u)) for n, u in made))
+            if mode == 'CONVEX' and any(u == 'BOX' for _n, u in made):
+                text += "\n\n(flat models get a bounding box instead of a hull)"
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information,
+                                    "INU Tools: Generate COL", text,
+                                    QtWidgets.QMessageBox.Ok, self)
+        box.setModal(False)
+        box.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        box.show()
 
     def _do_export(self):
         """Окно выбора (папка + имя) с опциями Export All INU справа."""
@@ -467,10 +612,23 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         if not ok:
             return
         folder, name = dlg.target()
-        QtWidgets.QMessageBox.information(
-            self, "INU Tools: Export",
-            "Export is not implemented yet.\n\nFolder: %s\nName: %s"
-            % (folder, name or "(per model)"))
+        self._reload_dev()
+        from inu_max.ops import dff_export
+        done, errors, warnings = dff_export.export(folder, (name or '').strip())
+        lines = []
+        if done:
+            lines.append("Exported to %s:\n  %s" % (folder, "\n  ".join(done)))
+        if errors:
+            lines.append("Errors:\n  " + "\n  ".join(errors))
+        if warnings:
+            for w in warnings:
+                print("[INU export] %s" % w)
+            lines.append("Warnings (%d):\n  %s" % (
+                len(warnings), "\n  ".join(warnings[:12])
+                + ("\n  … see the Max Listener" if len(warnings) > 12 else "")))
+        box = (QtWidgets.QMessageBox.warning if errors
+               else QtWidgets.QMessageBox.information)
+        box(self, "INU Tools: Export", "\n\n".join(lines) or "Nothing exported")
 
     # ---- ОКНО «MAP IO»: панели INU «IDE / IPL / IMG», «Object IDE / IPL»,
     # «ID Manager» (состав и подписи — как в Blender, см. map_io.py) ------
@@ -495,6 +653,58 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         self._game_handlers += [self.ide_ipl.pages['EXPORT'].flags.rebuild,
                                 self.obj_ide.flags.rebuild]
         self._start_polling()
+
+    # ---- ОКНО «LIGHTING»: панель INU «Lighting» (вкладки PreLight /
+    # PreLight COL; подпанели PreLight — отдельными роллаутами, см.
+    # light_panel.py) --------------------------------------------------
+    def _sections_light(self, root):
+        from . import light_panel
+        s = Rollout("Lighting", opened=True)
+        self.light = light_panel.LightingPanel(self._light_op)
+        s.body.addWidget(self.light)
+        root.addWidget(s)
+        subs = []
+        s = Rollout("Advanced Settings")
+        self.light_adv = light_panel.AdvancedSettings(self._light_op)
+        s.body.addWidget(self.light_adv)
+        root.addWidget(s)
+        subs.append(s)
+        self.light_tools = light_panel.ToolsPanel(self._light_op)
+        self.light_foliage = light_panel.FoliagePanel(self._light_op)
+        self.light_post = light_panel.PostPanel(self._light_op)
+        for title, w in (("Tools", self.light_tools), ("Foliage / Tree", self.light_foliage),
+                         ("Post-Processing", self.light_post)):
+            s = Rollout(title)
+            s.body.addWidget(w)
+            root.addWidget(s)
+            subs.append(s)
+        # подпанели PreLight видны только на вкладке PreLight (как в INU)
+        self.light.tab_handlers = [lambda m, rs=subs: [r.setVisible(m == 'PRELIGHT') for r in rs]]
+        self.light._on_tab(self._get('light_mode', 'PRELIGHT'))
+        self._sel_handlers.append(self.light.on_selection)
+        self._sel_handlers.append(self.light_foliage.on_selection)
+        self._start_polling()
+
+    def _light_op(self, label, fn, *args):
+        """Операция окна Lighting (ops/prelight.py) + отчёт + обновление."""
+        def go():
+            self._reload_dev()
+            from inu_max.ops import prelight, prelight_tools
+            from inu_max.adapter import prelight_scene
+            # часть 1 — ops/prelight.py, часть 2 (Tools / Foliage /
+            # Post-Processing) — ops/prelight_tools.py
+            op = getattr(prelight, fn, None) or getattr(prelight_tools, fn)
+            level, text = op(*args)
+            # вьюпорт — сразу (иначе новый показ цвета вершин виден только
+            # после поворота вида)
+            prelight_scene.redraw()
+            self._show_result(label, level, text)
+            for w in (getattr(self, 'light', None), getattr(self, 'light_adv', None),
+                      getattr(self, 'light_tools', None), getattr(self, 'light_post', None),
+                      getattr(self, 'light_foliage', None)):
+                if w is not None:
+                    w.refresh()
+        self._run(go, label)
 
     # ---- ОКНО «CHECK»: панели INU «Проверка», «Анализ карты/файлов»,
     # «Текстуры (TXD)» (см. check_panel.py) ------------------------------
@@ -667,6 +877,20 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         if key == "inu_export":
             self._run(self._do_export, label)
             return
+        if key in ("auto_col_convex", "auto_col_box"):
+            mode = 'CONVEX' if key == "auto_col_convex" else 'BOX'
+            self._run(lambda: self._do_auto_col(mode), label)
+            return
+        if key in self._MAP_OPS:
+            self._run(lambda: self._do_map_op(key, label), label)
+            return
+        if key in ("setup:install", "setup:remove"):
+            from . import setup_ui
+            fn = (setup_ui.install_interactive if key == "setup:install"
+                  else setup_ui.remove_interactive)
+            self._run(lambda: fn(self), label)
+            self._refresh_setup()
+            return
         self._reload_dev()
         op = self._OPS.get(key)
         if op is not None:
@@ -674,6 +898,61 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
             self._run(lambda: getattr(__import__(mod, fromlist=[fn]), fn)(), label)
             return
         self._stub(label, key)
+
+    # операции окна Map IO: ключ → модуль inu_max.ops; функция возвращает
+    # (уровень, текст отчёта)
+    _MAP_OPS = {
+        'scan_img_for_ipl': 'map_import',
+        'scan_ide_for_ipl': 'map_import',
+        'import_from_img': 'map_import',
+    }
+
+    def _do_map_op(self, key, label):
+        self._reload_dev()
+        import importlib
+        mod = importlib.import_module('inu_max.ops.' + self._MAP_OPS[key])
+        level, text = getattr(mod, key)()
+        self._after_map_op()
+        self._show_result(label, level, text, popup=key == 'import_from_img')
+
+    def _show_result(self, label, level, text, popup=False):
+        '''Отчёт операции: INFO — строкой в статусе Max (и в Listener),
+        предупреждение / ошибка (или popup) — немодальным окном.'''
+        if not text:
+            return
+        print("[INU] %s: %s" % (label, text.replace("\n", " | ")))
+        if popup or level != 'INFO':
+            icon = {'ERROR': QtWidgets.QMessageBox.Critical,
+                    'WARNING': QtWidgets.QMessageBox.Warning}.get(
+                        level, QtWidgets.QMessageBox.Information)
+            # немодально: модальный цикл Qt поверх Max мешал догрузке
+            # текстур вьюпорта (см. _import_paths)
+            box = QtWidgets.QMessageBox(icon, "INU Tools: " + label, text,
+                                        QtWidgets.QMessageBox.Ok, self)
+            box.setModal(False)
+            box.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+            box.show()
+        else:
+            try:
+                import pymxs
+                pymxs.runtime.displayTempPrompt(text, 6000)
+            except Exception:                          # noqa: BLE001
+                pass
+
+    def _after_map_op(self):
+        """После операции Map IO: списки файлов, найденные IMG / IDE, игра
+        (импорт мог её переключить), статусы выделения."""
+        ide_ipl = getattr(self, 'ide_ipl', None)
+        if ide_ipl is not None:
+            imp, exp = ide_ipl.pages['IMPORT'], ide_ipl.pages['EXPORT']
+            for lst in (imp.ipls, exp.ipls, exp.ides):
+                lst.rebuild()
+            imp.refresh()
+            exp.refresh()
+        self._sync_from_settings()
+        for fn in self._game_handlers:
+            fn()
+        self._sel_key = object()
 
     def _run(self, fn, label):
         try:

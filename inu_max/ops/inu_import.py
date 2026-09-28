@@ -2,8 +2,8 @@
 #
 # Чистый диспетчер: импортирует РОВНО выбранные файлы, каждый по своему типу,
 # в порядке TXD → DFF → COL → CST → IDE → IPL. Текстуры из выбранных .txd
-# уходят в DFF этого же импорта. Пока реализованы DFF и TXD, остальные типы
-# перечисляются в отчёте как ещё не поддержанные.
+# уходят в DFF этого же импорта. Реализованы TXD, DFF, COL и CST; IDE и IPL
+# пока перечисляются в отчёте как ещё не поддержанные.
 
 import os
 
@@ -38,7 +38,19 @@ def import_files(paths, auto_txd=True):
         except Exception as e:                         # noqa: BLE001
             lines.append("DFF %s: error %s" % (os.path.basename(p), e))
 
-    todo = [os.path.basename(p) for e in _ORDER[2:] for p in by_ext[e]]
+    # коллизия: .col (одна модель или библиотека) и .cst — после DFF, чтобы
+    # встать на место одноимённых моделей
+    from .import_col import import_col, import_cst, report_line
+    for ext, fn, kind in (('.col', import_col, 'COL'), ('.cst', import_cst, 'CST')):
+        for p in by_ext[ext]:
+            try:
+                lines.append(report_line(kind, p, fn(p)))
+            except Exception as e:                     # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                lines.append("%s %s: error %s" % (kind, os.path.basename(p), e))
+
+    todo = [os.path.basename(p) for e in ('.ide', '.ipl') for p in by_ext[e]]
     if todo:
         lines.append("Not supported yet: " + ", ".join(todo))
     if other:

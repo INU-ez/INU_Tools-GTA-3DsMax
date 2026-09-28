@@ -19,6 +19,7 @@ DEFAULTS = {
     'col_brightness': 0,
     'ambient': 1.0, 'surf_specular': 1.0, 'surf_diffuse': 1.0,
     'texture_name': '', 'tex_filter': '2', 'tex_addr_u': '1', 'tex_addr_v': '1',
+    'tex_filter_hi': 1,
     'mask_texture': '',
     'vehicle_color_slot': 'NONE', 'paintjob_alt_1': '', 'paintjob_alt_2': '',
     'export_env_map': False, 'env_map_tex': '', 'env_map_coef': 0.5,
@@ -157,9 +158,32 @@ def set_color(mat, rgba):
         mat.opacity = a * 100.0
 
 
-def texture_file(mat):
+# обёртки diffuse, которые ставит INU (превью Prelight, LightMap UV2):
+# RGB_Multiply с этим именем, исходная карта — map1
+_WRAPPERS = ('INU_Prelight', 'INU_LightMap')
+
+
+def base_diffuse(mat):
+    """Карта diffuse материала без обёрток INU (превью, LightMap)."""
+    rt = _rt()
     try:
         m = mat.diffuseMap
+    except Exception:                                  # noqa: BLE001
+        return None
+    for _ in range(4):
+        try:
+            if m is not None and rt.classOf(m) == rt.RGB_Multiply                     and str(m.name) in _WRAPPERS:
+                m = m.map1
+                continue
+        except Exception:                              # noqa: BLE001
+            pass
+        break
+    return m
+
+
+def texture_file(mat):
+    try:
+        m = base_diffuse(mat)
         return str(m.fileName) if m is not None else ''
     except Exception:                                  # noqa: BLE001
         return ''

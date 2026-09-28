@@ -9,6 +9,8 @@
 # pymxs импортируем лениво: модуль должен грузиться и вне Max (UI берёт
 # отсюда FLAG_DEFAULTS, в т.ч. при offscreen-рендере панели).
 
+import contextlib
+
 
 def _rt():
     import pymxs
@@ -308,8 +310,26 @@ def find(name):
 
 
 def _undo(label):
+    """Шаг отмены операций окон — ошибка в блоке не глотается (undo_block)."""
+    return undo_block(label)
+
+
+@contextlib.contextmanager
+def undo_block(label):
+    """Шаг отмены, ошибка внутри которого НЕ глотается. pymxs.undo при
+    исключении в блоке молча отменяет его и продолжает код после блока
+    (проверено в Max 2026: операция отчитывается об успехе, в 3dsmaxbatch
+    отмена удалила и узел, созданный до блока). Здесь изменения до ошибки
+    остаются (их снимает Ctrl+Z), а ошибка идёт дальше — в отчёт окна."""
     import pymxs
-    return pymxs.undo(True, label)
+    err = []
+    with pymxs.undo(True, label):
+        try:
+            yield
+        except Exception as e:                         # noqa: BLE001
+            err.append(e)
+    if err:
+        raise err[0]
 
 
 def select_node(name):

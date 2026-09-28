@@ -39,8 +39,9 @@ _DEFAULTS = {
     'col_library': False,       # все коллизии в один .col
     'col_library_name': 'collision',
     'col_empty': False,
-    'col_auto_light': True,
-    'col_auto_light_value': 78,
+    'col_light_mode': 'AUTO',   # свет COL: 'AUTO' (день/ночь ниже на всё) | 'MATERIAL'
+    'col_auto_day': 14,         # 14 / 4 = старый байт Kam's 78
+    'col_auto_night': 4,
     'txd_shared': False,        # все текстуры в один .txd
     'txd_shared_name': 'textures',
     'txd_merge': False,         # дописать в существующий .txd
@@ -222,6 +223,60 @@ _DEFAULTS = {
     'radar_size': 256,
     'radar_height': 3000.0,
     'radar_specific': '',
+    # — Lighting (панель INU «Lighting»: PreLight / PreLight COL) —
+    'light_mode': 'PRELIGHT',       # PRELIGHT | COL
+    'prelight_preset': 'Default',
+    'bake_ambient': 0.10,           # Advanced Settings (только «Bake»)
+    'bake_intensity': 0.05,
+    'bake_gamma': 0.50,
+    'prelight_use_point': True,     # какие лампы запекать
+    'prelight_use_sun': True,
+    'prelight_use_spot': True,
+    'prelight_use_area': True,
+    'prelight_use_hdri': False,
+    'show_prelight_view': False,    # «Preview correction»
+    'prelight_view_bright': 0.004,
+    'prelight_view_contrast': 0.0,
+    'prelight_view_gamma': 1.0,
+    'prelight_view_saturation': 1.0,
+    # Tools / Post-Processing (часть 2; значения — как в INU, для пресетов)
+    'fill_prelight_day': [124 / 255.0] * 3,     # sRGB (байт 124)
+    'fill_prelight_night': [83 / 255.0] * 3,    # sRGB (байт 83)
+    'fill_prelight_selected_only': False,
+    'scatter_color_color': [1.0, 1.0, 1.0],     # sRGB
+    'scatter_color_strength': 1.0,
+    'scatter_color_distance': 0.3,
+    'vc_smooth_iterations': 1,
+    'vc_smooth_factor': 0.5,
+    'vc_contrast': 1.0,
+    'vc_brightness': 0.0,
+    'vc_gamma': 1.0,
+    'lift_shadows_strength': 0.5,
+    # Foliage / Tree (часть 2)
+    'foliage_material_name': '',
+    'foliage_color_material_name': '',
+    'foliage_select_only': False,
+    'foliage_both_sides': True,
+    'foliage_blend': 'MULTIPLY',                # MULTIPLY | REPLACE
+    'foliage_metric': 'SPHERE',                 # SPHERE | CYLINDER
+    'foliage_inside': 0.25,
+    'foliage_outside': 1.0,
+    'foliage_gamma': 1.0,
+    'foliage_height_dark': 0.0,
+    'foliage_color_height_dark': 0.0,
+    'foliage_top_bright': 0.0,
+    'foliage_top_height': 1.0,
+    'foliage_variation': 0.0,
+    'foliage_light_tint': [0.55, 0.8, 0.3],     # sRGB
+    'foliage_shadow_tint': [0.2, 0.35, 0.12],   # sRGB
+    'foliage_tint_strength': 1.0,
+    # PreLight COL (часть 3)
+    'col_day_min': 10, 'col_day_max': 15,
+    'col_night_min': 0, 'col_night_max': 5,
+    'col_light_edge': 0.0,          # «Край»: гамма яркости
+    'col_light_threshold': 0,       # «Порог» 0..100 (100 — без порога)
+    'col_light_contrast': 0.0,      # S-контраст
+    'col_light_show_numbers': True,
 
     'ide_path': '',
     'ipl_path': '',

@@ -372,7 +372,20 @@ def check_game_mismatch_warning(scene, detected_game: Optional[str]
     current = getattr(inu, 'gtatools_game', GAME_SA)
     if current == detected_game:
         return None
-    return (f"Импортированный файл = {detected_game}, "
-            f"но активная игра сцены = {current}. "
-            f"Переключи вкладку GTA Tools на «{detected_game}» — "
-            f"иначе экспорт пойдёт в неправильном формате.")
+    # Russian source string is the translation key (same scheme as the
+    # host's ``T``); format AFTER translating so placeholders survive.
+    return _t("Импортированный файл = {0}, "
+              "но активная игра сцены = {1}. "
+              "Переключи вкладку GTA Tools на «{0}» — "
+              "иначе экспорт пойдёт в неправильном формате."
+              ).format(detected_game, current)
+
+
+def _t(s: str) -> str:
+    """Lazy translation through the host package's ``T`` — falls back to
+    the raw Russian string when there is none (standalone tests)."""
+    try:
+        from .. import T
+        return T(s)
+    except Exception:
+        return s

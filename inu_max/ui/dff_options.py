@@ -331,17 +331,27 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         vl = QtWidgets.QVBoxLayout(self._w_col_light)
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(4)
-        vl.addWidget(self._check(
-            "Auto COL light", 'col_auto_light', True,
-            "Fill the collision light byte on faces where it is 0 (no COL "
-            "material / day+night not set). Same as Kam's CST export "
-            "(light=78), otherwise the collision stays unlit in game. Manual "
-            "and imported values are kept.", self._refresh))
-        self._sp_light = self._spin(
-            'col_auto_light_value', 0, 255, 78,
-            "Light byte for unfilled faces. 78 = day≈15 / night 4 (Kam's "
-            "default). Packing: day = low nibble, night = high nibble.")
-        vl.addLayout(self._labeled("Value", self._sp_light))
+        vl.addWidget(QtWidgets.QLabel("Collision light"))
+        vl.addWidget(self._combo(
+            'col_light_mode',
+            [("From material", 'MATERIAL',
+              "Use day/night set on the model's COL materials (Day Light / "
+              "Night Light fields). Faces without settings stay at zero. "
+              "Keeps imported values."),
+             ("Auto: day + night", 'AUTO',
+              "Set the same day/night on the WHOLE collision, overriding "
+              "materials. Kam's standard (day 14 / night 4 = old 78).")],
+            'AUTO', "Where to take collision lighting (day/night) from on export",
+            self._refresh))
+        self._w_auto_light = QtWidgets.QWidget()
+        self._w_auto_light.setLayout(self._row(
+            self._spin('col_auto_day', 0, 15, 14,
+                       "Collision day light for 'Auto' mode. 0–15 (low nibble "
+                       "of the light byte). 14 = standard (old 78)", prefix="Day: "),
+            self._spin('col_auto_night', 0, 15, 4,
+                       "Collision night light for 'Auto' mode. 0–15 (high nibble "
+                       "of the light byte). 4 = standard (old 78)", prefix="Night: ")))
+        vl.addWidget(self._w_auto_light)
         g.addWidget(self._w_col_light)
         r.body.addWidget(g.box)
 
@@ -414,7 +424,7 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         self._g_col.box.setVisible(col or cst)
         self._w_col_lib.setVisible(col)           # library — только для .col
         self._w_col_light.setEnabled(not g('col_empty', False))
-        self._sp_light.setEnabled(bool(g('col_auto_light', True)))
+        self._w_auto_light.setVisible(g('col_light_mode', 'AUTO') == 'AUTO')
         self._g_txd.box.setVisible(bool(g('exp_txd', True)))
         self._ed_shared.setEnabled(bool(g('txd_shared', False)))
         self._lb_txd_note.setVisible(

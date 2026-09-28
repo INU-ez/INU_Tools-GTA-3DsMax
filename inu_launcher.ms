@@ -2,18 +2,23 @@
 --
 -- Кнопки открывают Qt-окна инструментов (Python: inu_boot.launch).
 -- Запуск: Scripting -> Run Script -> этот файл. Появится роллаут "INU Tools"
--- в командной панели (вкладка Utilities). Чтобы был всегда — положи копию в
--- папку ...\3ds Max 2026\scripts\Startup\ (как скрипты Kam's).
+-- в командной панели (вкладка Utilities). Кнопка Setup -> Install INU ставит
+-- INU в Max: после перезапуска лаунчер, меню «INU Tools» и перетаскивание .dff
+-- во вьюпорт есть сами (пакет INU_Tools.bundle грузит этот файл при старте).
 --
--- ВАЖНО: путь к проекту ниже. Если папка другая — поправь INU_ROOT.
+-- Папка INU — та, где лежит этот файл (путь вручную задавать не нужно).
 
-global INU_ROOT = "F:/GitHub/INU_Tools-GTA-sa-3Ds Max"
+global INU_ROOT = pathConfig.removePathLeaf (getThisScriptFilename())
+global INU_LAUNCHER_NO_OPEN
+
+fn INU_boot = (
+	local cmd = "import sys\np = r'" + INU_ROOT + "'\nif p not in sys.path: sys.path.insert(0, p)\nsys.modules.pop('inu_boot', None)"
+	python.execute cmd
+	python.import "inu_boot"
+)
 
 fn INU_launch mode = (
-	local guard = "(sys.path.insert(0,p) if p not in sys.path else None)"
-	local cmd = "import sys; p=r'" + INU_ROOT + "'; " + guard + \
-		"; sys.modules.pop('inu_boot',None); import inu_boot; inu_boot.launch('" + mode + "')"
-	try ( python.execute cmd )
+	try ( (INU_boot()).launch mode )
 	catch ( messageBox ("INU: failed to open the window.\n" + (getCurrentException())) title:"INU Tools" )
 )
 
@@ -24,6 +29,7 @@ utility INU_Tools_util "INU Tools" width:162 (
 		button b_dff "DFF IO  (DFF / TXD)" width:150 height:24 align:#center
 		button b_veh "Vehicles"            width:150 height:24 align:#center
 		button b_mat "GTA Material"        width:150 height:24 align:#center
+		button b_light "Lighting"          width:150 height:24 align:#center
 	)
 	group "Map" (
 		button b_map "Map IO  (IDE / IPL / IMG)" width:150 height:24 align:#center
@@ -39,12 +45,30 @@ utility INU_Tools_util "INU Tools" width:162 (
 	group "Scene" (
 		button b_util "Check" width:150 height:24 align:#center
 	)
+	group "Setup" (
+		label l_setup "" align:#left width:150
+		button b_setup "Install INU" width:150 height:24 align:#center \
+			tooltip:"Install INU into 3ds Max: drag & drop .dff into the viewport, INU Tools menu, launcher at startup, numpy. Needs a 3ds Max restart."
+		button b_unset "Remove" width:150 height:20 align:#center \
+			tooltip:"Remove INU Tools from 3ds Max (your INU folder is not touched)"
+	)
 	label l_ver "INU Tools" align:#left across:2
-	label l_ver2 "v0.12.0" align:#right
+	label l_ver2 "" align:#right
 
+	fn refreshSetup = (
+		try (
+			local inuBoot = INU_boot()
+			l_setup.text = inuBoot.setup_status()
+			b_setup.text = inuBoot.setup_button()
+			l_ver2.text = "v" + (inuBoot.version())
+		) catch ( l_setup.text = "Setup: see MAXScript Listener" )
+	)
+
+	on INU_Tools_util open do refreshSetup()
 	on b_dff   pressed do INU_launch "dff"
 	on b_veh   pressed do INU_launch "veh"
 	on b_mat   pressed do INU_launch "mat"
+	on b_light pressed do INU_launch "light"
 	on b_map   pressed do INU_launch "map"
 	on b_fx    pressed do INU_launch "fx"
 	on b_paths pressed do INU_launch "paths"
@@ -53,6 +77,17 @@ utility INU_Tools_util "INU Tools" width:162 (
 	on b_radar pressed do INU_launch "radar"
 	on b_ifp   pressed do INU_launch "ifp"
 	on b_util  pressed do INU_launch "util"
+	on b_setup pressed do (
+		try ( (INU_boot()).setup_install() )
+		catch ( messageBox ("INU: installation failed.\n" + (getCurrentException())) title:"INU Tools" )
+		refreshSetup()
+	)
+	on b_unset pressed do (
+		try ( (INU_boot()).setup_remove() )
+		catch ( messageBox ("INU: removal failed.\n" + (getCurrentException())) title:"INU Tools" )
+		refreshSetup()
+	)
 )
 
-openUtility INU_Tools_util
+-- при запуске Max (пакет INU) роллаут только регистрируется, не открывается
+if INU_LAUNCHER_NO_OPEN != true do openUtility INU_Tools_util

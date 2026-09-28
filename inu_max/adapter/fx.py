@@ -47,7 +47,7 @@ DEFAULTS = {
         'esc_bottom': (0.0, 0.0, 0.0), 'esc_top': (0.0, 2.0, 3.0),
         'esc_end': (0.0, 3.0, 3.0), 'esc_direction': '1',
     },
-    'RAW_2DFX': {'2dfx_raw_effect_id': 0, '2dfx_raw_size': 0},
+    'RAW_2DFX': {'2dfx_raw_effect_id': 0, '2dfx_raw_size': 0, '2dfx_raw_hex': ''},
 }
 
 # редактируемые параметры частицы (obj.inu.particle_* INU) и их умолчания

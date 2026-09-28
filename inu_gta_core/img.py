@@ -303,96 +303,81 @@ class ImgReader:
 
 def replace_or_add(img_path: str, filename: str, data: bytes) -> str:
     """
-    Replace or add a file in an IMG v2 archive.
+    Replace or add one file in an IMG archive (VER1 or VER2).
 
     - If *filename* already exists and the new data fits in the old slot,
       overwrite in place.
     - If new data is larger or file doesn't exist, append at the end.
-    - Directory is always rewritten.
+    - Directory is always rewritten (the sibling ``.dir`` for VER1).
+
+    Thin wrapper over ``ImgWriter`` so both share one code path, including
+    the VER2 directory-growth relocation. For many files use ``ImgWriter``
+    directly.
 
     Returns status string: 'replaced' or 'added'.
     """
-    entries = read_directory(img_path)
-    new_sectors = sectors_needed(len(data))
-    # Pad data to sector boundary
-    padded = data + b'\x00' * (new_sectors * SECTOR - len(data))
-
-    status = 'added'
-    target_entry = None
-
-    # Check if file exists
-    for e in entries:
-        if e.name.lower() == filename.lower():
-            target_entry = e
-            break
-
-    with open(img_path, 'r+b') as f:
-        if target_entry and new_sectors <= target_entry.size:
-            # Fits in existing slot — overwrite in place
-            f.seek(target_entry.offset * SECTOR)
-            f.write(padded)
-            target_entry.size = new_sectors
-            status = 'replaced'
-        else:
-            # Append at end of file
-            f.seek(0, 2)  # seek to end
-            end_pos = f.tell()
-            # Align to sector boundary
-            end_sector = sectors_needed(end_pos)
-            if end_pos < end_sector * SECTOR:
-                f.write(b'\x00' * (end_sector * SECTOR - end_pos))
-                end_pos = end_sector * SECTOR
-
-            f.seek(end_pos)
-            f.write(padded)
-
-            new_offset = end_pos // SECTOR
-
-            if target_entry:
-                # Update existing entry to point to new location
-                target_entry.offset = new_offset
-                target_entry.size = new_sectors
-                status = 'replaced'
-            else:
-                # Add new entry
-                entries.append(ImgEntry(
-                    name=filename,
-                    offset=new_offset,
-                    size=new_sectors,
-                ))
-                status = 'added'
-
-        # Rewrite header + directory
-        _write_directory(f, entries)
-
-    return status
+    with ImgWriter(img_path) as w:
+        return w.add(filename, data)
 
 
 def remove_file(img_path: str, filename: str) -> bool:
     """
     Remove a file entry from the directory (data stays, space is wasted).
+    VER1 rewrites the sibling ``.dir``; VER2 rewrites the inline directory.
     Returns True if removed.
     """
+    version = detect_img_version(img_path)
     entries = read_directory(img_path)
     new_entries = [e for e in entries if e.name.lower() != filename.lower()]
-    if len(new_entries) == len(entries):
+    removed = len(entries) - len(new_entries)
+    if not removed:
         return False
 
+    if version == IMG_VERSION_1:
+        _write_dir_file(_sibling_dir_path(img_path), new_entries)
+        return True
     with open(img_path, 'r+b') as f:
         _write_directory(f, new_entries)
+        # The directory shrank: blank the stale tail records.
+        f.write(b'\x00' * (removed * DIR_ENTRY_SIZE))
     return True
+
+
+def _check_entry_name(filename: str) -> None:
+    """Reject names the game can't load. The record holds 24 bytes and the
+    engine forces ``name[23] = 0`` (``CStreaming::LoadCdDirectory``), so a
+    24th character is lost and the entry no longer matches IDE/IPL."""
+    try:
+        raw = filename.encode('ascii')
+    except UnicodeEncodeError:
+        raise ValueError(f"IMG entry name must be ASCII: {filename!r}")
+    if not raw or len(raw) > NAME_SIZE - 1:
+        raise ValueError(f"IMG entry name must be 1..{NAME_SIZE - 1} "
+                         f"characters: {filename!r}")
 
 
 def _encode_directory_records(entries: list[ImgEntry]) -> bytes:
     """Serialise entries to the 32-bytes-per-record on-disk form. Used
-    for both VER1 (full .dir contents) and VER2 (in-place at top of .img)."""
+    for both VER1 (full .dir contents) and VER2 (in-place at top of .img).
+
+    Size is written as ``<HH`` (streaming size, archive size = 0), the
+    layout ``_parse_dir_records`` reads. Names are cut to 23 bytes so the
+    field always keeps its terminating zero."""
     out = bytearray()
     for e in entries:
-        name_bytes = e.name.encode('ascii', errors='replace')[:NAME_SIZE]
+        if e.size > 0xFFFF:
+            raise ValueError(f"IMG entry {e.name!r} is {e.size} sectors, "
+                             "the directory size field holds at most 65535")
+        name_bytes = e.name.encode('ascii', errors='replace')[:NAME_SIZE - 1]
         name_bytes = name_bytes.ljust(NAME_SIZE, b'\x00')
-        out += struct.pack('<II', e.offset, e.size)
+        out += struct.pack('<IHH', e.offset, e.size, 0)
         out += name_bytes
     return bytes(out)
+
+
+def _directory_end(num_entries: int) -> int:
+    """Byte offset where the VER2 header + directory end."""
+    return 8 + num_entries * DIR_ENTRY_SIZE
 
 
 def _write_directory(f, entries: list[ImgEntry]) -> None:
@@ -433,17 +418,28 @@ class ImgWriter:
       in place
     - If it doesn't fit or the file is new → append at the end
     - Directory entry is updated accordingly and flushed at close.
+
+    VER2 keeps its directory at the top of the file, so every added entry
+    grows it by 32 bytes towards the first file's data. On close, files
+    the grown directory would overlap are moved to the end of the archive
+    before the directory is written.
     """
 
-    def __init__(self, filepath: str, *, version: int | None = None):
+    def __init__(self, filepath: str, *, version: int | None = None,
+                 reserve_entries: int = 0):
         """Open or create an IMG archive for batch writes.
 
         ``version`` — 1 (VER1, III/VC: split .dir + .img) or 2 (VER2,
         SA: single .img). Default ``None`` means auto-detect from the
         existing file (or fall back to VER2 for new archives).
+
+        ``reserve_entries`` — VER2 only: leave room for a directory of this
+        many entries before the first appended file, so a fresh archive of
+        known size (``rebuild_img``) needs no relocation at close.
         """
         self.filepath = filepath
         self.version = version
+        self.reserve_entries = reserve_entries
         self._f = None
         self._entries: list[ImgEntry] = []
         self._lookup: dict[str, int] = {}
@@ -491,28 +487,54 @@ class ImgWriter:
             self._f = None
             raise ValueError(f"Not a VER2 IMG archive (got {magic!r})")
         num = struct.unpack('<I', self._f.read(4))[0]
-        for _ in range(num):
-            raw = self._f.read(DIR_ENTRY_SIZE)
-            if len(raw) < DIR_ENTRY_SIZE:
-                break
-            off, sz = struct.unpack_from('<II', raw, 0)
-            name_bytes = raw[8:8 + NAME_SIZE]
-            name = name_bytes.split(b'\x00', 1)[0].decode(
-                'ascii', errors='replace')
-            self._entries.append(ImgEntry(name=name, offset=off, size=sz))
-            self._lookup[name.lower()] = len(self._entries) - 1
+        # Same record decoder as the reader: size is two u16s.
+        for i, e in enumerate(_parse_dir_records(
+                self._f.read(num * DIR_ENTRY_SIZE))):
+            self._entries.append(e)
+            self._lookup[e.name.lower()] = i
         # Remember current EOF so append operations don't have to
         # seek-to-end every time (which costs a syscall).
         self._f.seek(0, 2)
-        self._end_pos = self._f.tell()
+        self._end_pos = max(self._f.tell(),
+                            _directory_end(self.reserve_entries))
         return self
+
+    def _append(self, padded: bytes) -> int:
+        """Write sector-padded data at the sector-aligned end of the
+        archive. Returns its sector offset."""
+        aligned = sectors_needed(self._end_pos) * SECTOR
+        if self._end_pos < aligned:
+            self._f.seek(self._end_pos)
+            self._f.write(b'\x00' * (aligned - self._end_pos))
+            self._end_pos = aligned
+        self._f.seek(self._end_pos)
+        self._f.write(padded)
+        new_offset = self._end_pos // SECTOR
+        self._end_pos += len(padded)
+        return new_offset
+
+    def _relocate_under_directory(self) -> None:
+        """VER2: move every file whose data starts inside the space the
+        directory is about to occupy to the end of the archive. Moving
+        doesn't change the entry count, so one pass is enough."""
+        dir_end = _directory_end(len(self._entries))
+        for e in self._entries:
+            if e.size and e.offset * SECTOR < dir_end:
+                self._f.seek(e.offset * SECTOR)
+                data = self._f.read(e.size * SECTOR)
+                data += b'\x00' * (e.size * SECTOR - len(data))
+                e.offset = self._append(data)
 
     def add(self, filename: str, data: bytes) -> str:
         """Add or replace one file. Returns ``'added'`` or ``'replaced'``."""
         if self._f is None:
             raise RuntimeError("ImgWriter used outside its 'with' block")
+        _check_entry_name(filename)
 
         new_sectors = sectors_needed(len(data))
+        if new_sectors > 0xFFFF:
+            raise ValueError(f"{filename}: {len(data)} bytes is too big for "
+                             "one IMG entry (max 65535 sectors)")
         padded = data + b'\x00' * (new_sectors * SECTOR - len(data))
 
         idx = self._lookup.get(filename.lower())
@@ -525,16 +547,7 @@ class ImgWriter:
             return 'replaced'
 
         # Append path — align end to sector boundary.
-        end_sector = sectors_needed(self._end_pos)
-        aligned = end_sector * SECTOR
-        if self._end_pos < aligned:
-            self._f.seek(self._end_pos)
-            self._f.write(b'\x00' * (aligned - self._end_pos))
-            self._end_pos = aligned
-        self._f.seek(self._end_pos)
-        self._f.write(padded)
-        new_offset = self._end_pos // SECTOR
-        self._end_pos += new_sectors * SECTOR
+        new_offset = self._append(padded)
 
         if idx is not None:
             self._entries[idx].offset = new_offset
@@ -553,6 +566,7 @@ class ImgWriter:
                     _write_dir_file(_sibling_dir_path(self.filepath),
                                     self._entries)
                 else:
+                    self._relocate_under_directory()
                     _write_directory(self._f, self._entries)
             finally:
                 self._f.close()
@@ -606,7 +620,7 @@ def rebuild_img(filepath: str) -> dict:
         if os.path.exists(_p):
             os.remove(_p)
     create_img(tmp, version=version)
-    with ImgWriter(tmp, version=version) as w:
+    with ImgWriter(tmp, version=version, reserve_entries=len(blobs)) as w:
         for name, data in blobs:
             if data:
                 w.add(name, data)

@@ -5,8 +5,8 @@
 **🧰 Набор инструментов для моддинга GTA III / VC / SA в 3ds Max. То же ядро правил движка, что и в Blender-аддоне INU, интерфейс в стиле Kam's.**
 
 <p>
-  <img src="https://img.shields.io/badge/3ds%20Max-2025%2B-0696D7?logo=autodesk" alt="3ds Max">
-  <img src="https://img.shields.io/badge/Python-3.12%20%C2%B7%20PySide6-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/3ds%20Max-2023%2B-0696D7?logo=autodesk" alt="3ds Max">
+  <img src="https://img.shields.io/badge/Python-3.9%2B%20%C2%B7%20PySide2%20%2F%206-3776AB?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Game-GTA%20SA%20%C2%B7%20VC%20%C2%B7%20III-orange" alt="Games">
   <img src="https://img.shields.io/badge/Status-UI%20shell%20%C2%B7%20not%20ready-red" alt="Status">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
@@ -86,7 +86,7 @@
 
 | | |
 |---|---|
-| 🖥️ **3ds Max** | 2025+ (Python 3, PySide6, `qtmax`); разработка на **2026** / Python 3.12 |
+| 🖥️ **3ds Max** | минимум **2023** (2023–2024: Python 3.9–3.10 + PySide2; 2025+: PySide6); разработка на **2026** |
 | 🎮 **Игра** | GTA San Andreas (основная цель), Vice City и III |
 | 💻 **ОС** | Windows x64 |
 | 📦 **Зависимости** | только то, что идёт с Max |
@@ -104,7 +104,7 @@ inu_gta_core/       общее ядро: форматы + линты по пра
   game_versions.py  константы и диспетчеризация III / VC / SA
   mapsync/          документы IDE/IPL с сохранением исходных строк
 inu_max/            слой 3ds Max
-  ui/               окна PySide6 (panel.py — роутер окон, style.py / widgets.py — вид Kam's)
+  ui/               Qt-окна (panel.py — роутер окон, style.py / widgets.py — вид Kam's)
   adapter/          сцена Max ↔ структуры ядра (mesh, material, texture, anim, fx, world, zon)
   ops/              операции (импорт DFF/TXD, IFP, проверки, фреймы, 2DFX)
 ```
