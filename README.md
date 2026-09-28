@@ -2,7 +2,7 @@
 
 # INU Tools — GTA SA (3ds Max)
 
-**🧰 GTA III / VC / SA modding toolkit for 3ds Max. Same engine-rule core as the INU Blender addon, with a Kam's-style interface.**
+**🧰 GTA SA / VC / III modding toolkit for 3ds Max. Same engine-rule core as the INU Blender addon, with a Kam's-style interface.**
 
 <p>
   <img src="https://img.shields.io/badge/3ds%20Max-2023%2B-0696D7?logo=autodesk" alt="3ds Max">
