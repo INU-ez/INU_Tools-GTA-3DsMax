@@ -139,15 +139,37 @@ def _col_version(game):
     return game_versions.profile_for(game or 'SA').col_version
 
 
+def _prim_in(o, ref):
+    """ColPrim примитива в системе узла ref (модель карты стоит в мире со
+    своим поворотом, а в COL сферы / боксы — в системе модели): центр сферы
+    — через обратную матрицу ref, бокс — габарит в системе ref."""
+    from ..adapter.selection import _rt
+    rt = _rt()
+    p = _sr().col_prim_data(o)
+    if p.kind == 'BOX':
+        mn, mx = rt.nodeGetBoundingBox(o, ref.transform)
+        p.bb_min = (float(mn.x), float(mn.y), float(mn.z))
+        p.bb_max = (float(mx.x), float(mx.y), float(mx.z))
+    else:
+        c = o.pos * rt.inverse(ref.transform)
+        p.center = (float(c.x), float(c.y), float(c.z))
+    return p
+
+
 def _col_model(name, version, meshes, prims, opts, warnings, empty=False,
-               bounds_objs=(), origin=(0.0, 0.0, 0.0)):
+               bounds_objs=(), origin=(0.0, 0.0, 0.0), ref_node=None):
     """ColModel из узлов Max (+ аудит при «Audit models on export»).
     origin — мировая позиция корня модели: сферы и боксы берутся в мире,
-    а в COL нужны относительно модели (корень пишется в 0,0,0)."""
+    а в COL нужны относительно модели (корень пишется в 0,0,0). ref_node —
+    узел модели: примитивы пересчитываются в его систему целиком (с
+    поворотом; для моделей карты, Export to IMG)."""
     from .col_build import build_model
     sr = _sr()
     pr = []
     for o in prims:
+        if ref_node is not None:
+            pr.append(_prim_in(o, ref_node))
+            continue
         p = sr.col_prim_data(o)
         p.center = tuple(p.center[i] - origin[i] for i in range(3))
         p.bb_min = tuple(p.bb_min[i] - origin[i] for i in range(3))
@@ -200,22 +222,48 @@ def _collision_objects(meshes_sel, picked):
 
 # ── запись одного DFF ────────────────────────────────────────────────
 
-def _write(path, nodes, fx, opts, warnings, collision=b''):
-    from inu_gta_core.dff import write_dff_file, DFF_EXPORT_WARNINGS
-    from .dff_build import build_clump
+def dff_bytes(name, nodes, fx, opts, warnings, collision=b''):
+    """Байты .dff (клапм + аудит); name — имя модели для сообщений."""
+    from inu_gta_core.dff import DFF_EXPORT_WARNINGS
+    from .dff_build import build_clump, keyframe_uv_materials
     clump = build_clump(nodes, version=opts['version'],
                         write_valpha=opts['vertex_alpha'], fx=fx,
                         collision=collision)
+    kf = keyframe_uv_materials([m for n in nodes for m in n.materials])
+    if kf:
+        _keyframe_note(warnings, kf, opts['version'])
     if opts['platform'] == 'MOBILE':
         for g in clump.geometries:
             g.is_native_ogl = True
         clump.is_mobile = True
-    name = os.path.splitext(os.path.basename(path))[0]
     if opts['audit']:
         warnings += ["%s: %s" % (name, w) for w in audit(clump, name)]
-    write_dff_file(path, clump)
+    data = clump.to_bytes()
     warnings += ["%s: %s" % (name, w) for w in DFF_EXPORT_WARNINGS]
-    return clump
+    return data
+
+
+def _keyframe_note(warnings, kf, version):
+    """Режим Keyframes UV-анимации в Max ещё не сделан — одна строка на весь
+    экспорт, в начале списка (окно показывает первые 12); материалы
+    дописываются в неё. III/VC (RW < 3.5) UV-анимацию не пишут вовсе."""
+    head = ("UV animation 'Keyframes' is not implemented in 3ds Max yet — keys "
+            "ignored (%s), materials: " % (
+                "written as Scroll with Speed U/V" if version >= 0x35000
+                else "III/VC: no UV animation is written"))
+    for i, w in enumerate(warnings):
+        if w.startswith(head):
+            names = w[len(head):].split(", ")
+            warnings[i] = head + ", ".join(names + [n for n in kf if n not in names])
+            return
+    warnings.insert(0, head + ", ".join(kf))
+
+
+def _write(path, nodes, fx, opts, warnings, collision=b''):
+    name = os.path.splitext(os.path.basename(path))[0]
+    data = dff_bytes(name, nodes, fx, opts, warnings, collision)
+    with open(path, 'wb') as f:
+        f.write(data)
 
 
 def audit(clump, model_name):
@@ -245,18 +293,16 @@ def audit(clump, model_name):
 
 # ── TXD ──────────────────────────────────────────────────────────────
 
-def write_txd(path, objs, opts, warnings):
-    """Текстуры материалов objs → .txd (DXT1 / DXT3 с мипами). При «Merge
-    into existing TXD» и существующем файле — слияние (одноимённые
-    заменяются, остальные текстуры файла сохраняются). Возвращает подпись
-    для списка записанного или '' (текстур нет)."""
+def txd_data(name, objs, opts, warnings, base=None):
+    """Текстуры материалов objs → байты .txd (DXT1 / DXT3 с мипами). base —
+    байты существующего TXD для слияния (одноимённые заменяются, остальные
+    текстуры сохраняются). (байты | None — текстур нет, подпись)."""
     from inu_gta_core.dff import make_library_id
     from . import txd_build as tb
     sources, missing = _sr().texture_sources(objs)
-    name = os.path.basename(path)
     warnings += ["%s: texture file not found — %s" % (name, m) for m in missing]
     if not sources:
-        return ''
+        return None, ''
     lib_id = make_library_id(opts['version'])
     platform = tb.PLATFORM_D3D9 if opts['game'] == 'SA' else tb.PLATFORM_D3D8
     sections = []
@@ -268,20 +314,41 @@ def write_txd(path, objs, opts, warnings):
         sections.append((tex, tb.texture_native(tex, px, alpha, platform, lib_id,
                                                 opts['dxt_backend'])))
     if not sections:
-        return ''
+        return None, ''
+    if opts.get('platform') == 'MOBILE':
+        # мобильный TXD в Max ещё не сделан — одна строка на весь экспорт,
+        # в начало списка (окно показывает первые 12)
+        w = ("Mobile TXD is not implemented in 3ds Max yet — ignored: TXD "
+             "written in PC format")
+        if w not in warnings:
+            warnings.insert(0, w)
     note = "%d textures" % len(sections)
     data = None
-    if opts['txd_merge'] and os.path.isfile(path):
-        with open(path, 'rb') as f:
-            res = tb.merge(f.read(), sections)
+    if base is not None:
+        res = tb.merge(base, sections)
         if res is None:
-            warnings.append("%s: existing file is not a TXD — overwritten" % name)
+            warnings.append("%s: existing data is not a TXD — replaced" % name)
         else:
             lib, merged, rep, add = res
             data = tb.assemble(merged, lib)
             note = "merged: %d updated, %d added, %d total" % (rep, add, len(merged))
     if data is None:
         data = tb.assemble(sections, lib_id)
+    return data, note
+
+
+def write_txd(path, objs, opts, warnings):
+    """Текстуры материалов objs → .txd. При «Merge into existing TXD» и
+    существующем файле — слияние. Возвращает подпись для списка записанного
+    или '' (текстур нет)."""
+    name = os.path.basename(path)
+    base = None
+    if opts['txd_merge'] and os.path.isfile(path):
+        with open(path, 'rb') as f:
+            base = f.read()
+    data, note = txd_data(name, objs, opts, warnings, base)
+    if data is None:
+        return ''
     with open(path, 'wb') as f:
         f.write(data)
     return "%s (%s)" % (name, note)
@@ -467,5 +534,12 @@ def export(directory, name_override=''):
     уровне стека (scene_read.full_result)."""
     with _sr().full_result():
         if settings.get('exp_single_dff', False):
-            return export_single(directory, name_override)
-        return export_groups(directory, name_override)
+            res = export_single(directory, name_override)
+        else:
+            res = export_groups(directory, name_override)
+    if settings.get('export_to_img', False):
+        # галка All → IMG в Max ещё не сделана: файлы идут в выбранную папку
+        res[2].insert(0, "All → IMG is not implemented in 3ds Max yet — ignored: "
+                         "export goes to the chosen folder (for .img use Map IO → "
+                         "IMG → Export)")
+    return res

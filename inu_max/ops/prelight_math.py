@@ -154,6 +154,28 @@ def light_total(pos_v, faces, n_c, lights, shadows=None, *, model='SIMPLE',
     return total
 
 
+def env_pixel_index(dirs, width, height, u_offset=0.0):
+    """HDRI (_sample_equirect Blender, nearest): (строка сверху, столбец)
+    пикселя equirect-карты по направлениям dirs (n,3). Развёртка — как у
+    Spherical Environment Max (проба рендером): +X → u 0.75, u растёт с
+    азимутом, U Offset уменьшает u; v сверху = 0.5 − asin(z)/π."""
+    d = np.asarray(dirs, dtype=F32)
+    nrm = np.linalg.norm(d, axis=1, keepdims=True)
+    nrm[nrm < 1e-6] = 1.0
+    d = d / nrm
+    u = 0.75 + np.arctan2(d[:, 1], d[:, 0]) / (2.0 * math.pi) - float(u_offset)
+    u = np.mod(u, 1.0)
+    v = 0.5 - np.arcsin(np.clip(d[:, 2], -1.0, 1.0)) / math.pi
+    ix = np.clip((u * width).astype(np.int64), 0, width - 1)
+    iy = np.clip((v * height).astype(np.int64), 0, height - 1)
+    return iy, ix
+
+
+def env_output(rgb, level=1.0, offset=0.0, amount=1.0):
+    """Output карты Max (проба рендером): (цвет·RGB Level + RGB Offset)·Output Amount."""
+    return ((np.asarray(rgb, dtype=F32) * F32(level) + F32(offset)) * F32(amount)).astype(F32)
+
+
 def encode(total, *, model='SIMPLE', gamma=0.5):
     """T → значения канала (байт/255): гамма «Bake», 0..1, sRGB, 1/255."""
     t = np.asarray(total, dtype=F32)

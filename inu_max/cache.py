@@ -49,6 +49,22 @@ def disk_get(name, path):
     return None
 
 
+def disk_drop(names, path):
+    """Забыть path в кэшах names (архив переписан: отпечаток «размер + дата в
+    секундах» замену на месте в ту же секунду не замечает)."""
+    key = os.path.normcase(os.path.abspath(path))
+    for name in names:
+        store = _load(name)
+        if store.pop(key, None) is not None:
+            p = os.path.join(_dir(), name)
+            try:
+                with open(p + '.tmp', 'w', encoding='utf-8') as f:
+                    json.dump(store, f)
+                os.replace(p + '.tmp', p)
+            except OSError as e:
+                print("[INU cache] %s not saved: %r" % (name, e))
+
+
 def disk_put(name, path, data):
     store = _load(name)
     store[os.path.normcase(os.path.abspath(path))] = file_key(path) + [data]

@@ -5,8 +5,6 @@
 # FlagsBox и pipeline_buttons — общие для окна DFF IO и панели экспорта.
 # Оформление — роллауты и группы Kam's (widgets.py).
 
-import os
-
 from PySide6 import QtWidgets, QtCore
 
 from .style import C
@@ -271,7 +269,8 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         plat, self._plat_group = self._seg_buttons(
             [("PC", "PC"), ("Mobile", "MOBILE")], self._get('platform', 'PC'),
             lambda d: self._set('platform', d),
-            "PC / Mobile: Mobile writes Native Data PLG geometry.")
+            "PC / Mobile: Mobile writes Native Data PLG geometry. Mobile TXD "
+            "is not implemented in 3ds Max yet — ignored: TXD stays PC format.")
         game, self._game_group = self._seg_buttons(
             [("SA", "SA"), ("III", "III"), ("VC", "VC")], self._get('game', 'SA'),
             self._on_game, "Target game: RW version of the DFF/COL/TXD.")
@@ -391,13 +390,17 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         g.addWidget(fg.box)
         r.body.addWidget(g.box)
 
-        # All → IMG
+        # All → IMG — в Max ещё не сделано: галка есть, экспорт её не читает
         g = self._group("Output")
         g.addWidget(self._check(
             "All → IMG", 'export_to_img', False,
-            "Export straight into the .img archive (IMG path of the project). "
-            "The folder choice is ignored.", self._refresh))
-        self._lb_img = self._info("")
+            "Export straight into the .img archive (not implemented in 3ds Max "
+            "yet — ignored: export goes to the chosen folder). For .img use "
+            "Map IO → IMG → Export.", self._refresh))
+        self._lb_img = self._info("Not implemented in 3ds Max yet — ignored: "
+                                  "export goes to the chosen folder.\nFor .img: "
+                                  "Map IO → IMG → Export")
+        self._lb_img.setStyleSheet("color:%s;" % C['err'])
         g.addWidget(self._lb_img)
         r.body.addWidget(g.box)
         lay.addStretch(1)
@@ -430,17 +433,7 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         self._lb_txd_note.setVisible(
             not g('txd_shared', False) and self._n_groups > 1)
         self._g_dff.box.setVisible(bool(g('exp_dff', True) or g('exp_lod', True)))
-        to_img = bool(g('export_to_img', False))
-        self._lb_img.setVisible(to_img)
-        if to_img:
-            img = g('img_path', '') or ''
-            if img:
-                self._lb_img.setText(os.path.basename(img) + "\nFolder is "
-                                     "ignored: export goes to this IMG")
-                self._lb_img.setStyleSheet("color:#b8b8b8;")
-            else:
-                self._lb_img.setText("The .img path is not set")
-                self._lb_img.setStyleSheet("color:%s;" % C['err'])
+        self._lb_img.setVisible(bool(g('export_to_img', False)))
 
     def filters(self):
         """Фильтры «Files of type» по включённым форматам (LOD — тоже .dff)."""

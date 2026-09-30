@@ -63,9 +63,10 @@ def _has_texture(o):
             mats = [s for s in m.materialList if s is not None]
     except Exception:                                  # noqa: BLE001
         pass
+    from .material import base_diffuse          # без обёрток INU (LightMap, превью)
     for s in mats:
         try:
-            if s.diffuseMap is not None:
+            if base_diffuse(s) is not None:
                 return True
         except Exception:                              # noqa: BLE001
             continue
@@ -210,7 +211,12 @@ def get_field(o, key, default):
 def put_field(nodes, key, value):
     """Записать поле: строки и векторы — в кавычках (см. выше)."""
     if isinstance(value, (tuple, list)):
-        value = '"%s"' % ",".join("%g" % float(v) for v in value)
+        # %.9g — float32 без потерь (%g давал 6 цифр: 2233.8032 → 2233.8)
+        value = '"%s"' % ",".join("%.9g" % float(v) for v in value)
+    elif isinstance(value, float):
+        # число — тоже текстом %.9g: Float Max печатает сам с 6 цифрами;
+        # repr оставляет точку («300.0»), getUserProp вернёт Float
+        value = repr(float("%.9g" % value))
     elif isinstance(value, str):
         value = '"%s"' % value.replace('"', "'")
     set_prop(nodes, key, value)

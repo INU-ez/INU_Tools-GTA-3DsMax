@@ -225,7 +225,8 @@ def export_zon(path, objects):
             dups.append(z.name)
         seen.add(z.name)
         zf.zones.append(z)
-    if os.path.isfile(path):
+    # .bak — исходник один раз, свои повторные экспорты его не затирают.
+    if os.path.isfile(path) and not os.path.isfile(path + '.bak'):
         shutil.copy2(path, path + '.bak')
     zc.write_zon(path, zf)
     return zf, dups

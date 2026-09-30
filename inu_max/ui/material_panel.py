@@ -321,7 +321,9 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
             seg, group = self._seg_buttons(
                 [("Scroll", 'SCROLL', "Constant linear scrolling by Speed U/V"),
                  ("Keyframes", 'KEYFRAME', "Custom animation: keys on the "
-                  "diffuse map coordinates, the export will read them")],
+                  "diffuse map coordinates (not implemented in 3ds Max yet — "
+                  "ignored: SA export writes Scroll with Speed U/V, III/VC "
+                  "none)")],
                 'SCROLL', lambda _d: None, "UV animation mode")
             b.add('uv_anim_mode', 'SCROLL', group, self._show_details)
             self._uv_group = group
@@ -339,9 +341,12 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
                 3, 0.01, 1e4, 0.1, "Duration: ", "Duration of the UV animation "
                 "cycle (s)")))
             d.addWidget(self._uv_scroll)
+            # режим ключей в Max ещё не сделан: экспорт SA пишет Scroll
             self._uv_keys = IconLabel(
-                "Keys — animate the diffuse map Offset / Tiling (Coordinates "
-                "rollout of the bitmap)", 'info', wrap=True)
+                "Keys are not implemented in 3ds Max yet — ignored: SA export "
+                "writes Scroll with the Speed U/V / Duration set in Scroll mode "
+                "(III/VC write no UV animation)",
+                'error', wrap=True, icon_color=_ERR)
             d.addWidget(self._uv_keys)
 
         effect('export_env_map', "Environment Map",

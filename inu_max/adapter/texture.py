@@ -45,9 +45,60 @@ def _safe_name(name):
     return re.sub(r'[^A-Za-z0-9_.\-]', '_', name) or 'tex'
 
 
-def extract_txd_bytes(txd_bytes, out_dir):
+# Версия декода TXD → PNG: поднимать, когда меняются пиксели на выходе, —
+# PNG прошлой версии тогда пишутся заново (кэши карты — все, <модель>_textures
+# — только изменившиеся).
+# 2 — R↔B у палитровых D3D8-текстур (GTA III).
+TEX_VER = 2
+_VER_FILE = '.inu_tex_ver'
+
+
+def _needs_swap(tex, swap_rb=None):
+    """R↔B-своп, как txd_import Blender: только палитровым (PAL8/PAL4) на
+    D3D8 = GTA III (палитра BGRA, декодер читает RGBA); D3D8 16-бит (VC) и
+    D3D9 (SA) верные. Иная платформа — swap_rb (None → игра проекта III/VC)."""
+    pid = getattr(tex, 'platform_id', 0)
+    if pid == 8 and getattr(tex, 'raster_format', 0) & 0x6000:   # PAL8|PAL4
+        return True
+    if pid in (8, 9):
+        return False
+    if swap_rb is None:
+        from .. import settings
+        swap_rb = settings.get('game', 'SA') in ('III', 'VC')
+    return bool(swap_rb)
+
+
+def tex_rgba(tex, swap_rb=None):
+    """Пиксели текстуры ядра с R↔B-свопом (_needs_swap)."""
+    px = tex.pixels
+    if not _needs_swap(tex, swap_rb):
+        return px
+    out = bytearray(px)
+    out[0::4], out[2::4] = px[2::4], px[0::4]
+    return bytes(out)
+
+
+def _ver_ok(folder):
+    try:
+        with open(os.path.join(folder, _VER_FILE), 'r', encoding='utf-8') as f:
+            return f.read().strip() == str(TEX_VER)
+    except OSError:
+        return False
+
+
+def _ver_mark(folder):
+    try:
+        with open(os.path.join(folder, _VER_FILE), 'w', encoding='utf-8') as f:
+            f.write(str(TEX_VER))
+    except OSError:
+        pass
+
+
+def extract_txd_bytes(txd_bytes, out_dir, only_swapped=False):
     """Декодировать TXD (байты) ядром и сохранить каждую текстуру в PNG в
-    out_dir. Возвращает dict {имя_текстуры.lower(): путь_к_png}."""
+    out_dir. Возвращает dict {имя_текстуры.lower(): путь_к_png}.
+    only_swapped — лежащий PNG переписывать, только если его пиксели
+    изменились с прошлой версии декода (R↔B); прочие (и правки в них) целы."""
     from inu_gta_core.txd import read_txd
     os.makedirs(out_dir, exist_ok=True)
     result = {}
@@ -55,17 +106,26 @@ def extract_txd_bytes(txd_bytes, out_dir):
         if not tex.pixels or tex.width <= 0 or tex.height <= 0:
             continue
         png = os.path.join(out_dir, _safe_name(tex.name) + '.png')
+        if only_swapped and not _needs_swap(tex) and os.path.isfile(png):
+            result[tex.name.lower()] = png
+            continue
         try:
-            write_png(png, tex.pixels, tex.width, tex.height)
+            write_png(png, tex_rgba(tex), tex.width, tex.height)
             result[tex.name.lower()] = png
         except Exception as e:                         # noqa: BLE001
             print("[INU tex] write '%s' failed: %r" % (tex.name, e))
     return result
 
 
-def extract_txd_file(txd_path, out_dir):
+def extract_txd_file(txd_path, out_dir, only_swapped=False):
+    # папка без PNG или уже текущей версии — после извлечения вся текущая
+    # (так и Import TXD): метка версии; иначе метку ставит build_tex_map
+    fresh = not _png_map(out_dir) or _ver_ok(out_dir)
     with open(txd_path, 'rb') as f:
-        return extract_txd_bytes(f.read(), out_dir)
+        res = extract_txd_bytes(f.read(), out_dir, only_swapped)
+    if fresh:
+        _ver_mark(out_dir)
+    return res
 
 
 def _all_txds(root, cap=20000):
@@ -208,9 +268,12 @@ def build_tex_map(dff_path, needed_names=None):
         root, os.path.splitext(os.path.basename(dff_path))[0] + "_textures")
     needed = set(n.lower() for n in (needed_names or []) if n)
 
-    # PNG уже извлечены прошлым импортом — TXD не трогаем
+    # PNG уже извлечены прошлым импортом — TXD не трогаем. Папка прошлой
+    # версии декода (без метки): покрывающие TXD проходятся ещё раз, но
+    # лежащий PNG переписывается, только если его пиксели изменились (R↔B)
     have = _png_map(out_dir)
-    if needed and needed <= set(have):
+    cur = _ver_ok(out_dir) or not have          # пустая папка — уже текущая
+    if cur and needed and needed <= set(have):
         print("[INU tex] все %d текстур уже в %s" % (len(needed), out_dir))
         return have
 
@@ -225,14 +288,14 @@ def build_tex_map(dff_path, needed_names=None):
         # Жадно: сначала .txd с наибольшим покрытием, добираем пока не
         # закроем все нужные текстуры (модель может тянуть из нескольких).
         scored.sort(key=lambda x: -x[0])
-        remaining = needed - set(have)
+        remaining = needed - set(have) if cur else set(needed)
         for cov, txd, names in scored:
             if not remaining:
                 break
             if cov == 0 or not (names & remaining):
                 continue
             try:
-                extract_txd_file(txd, out_dir)
+                extract_txd_file(txd, out_dir, only_swapped=not cur)
                 n_txd += 1
             except Exception as e:                     # noqa: BLE001
                 print("[INU tex] %s: %r" % (os.path.basename(txd), e))
@@ -246,6 +309,8 @@ def build_tex_map(dff_path, needed_names=None):
                     n_txd += 1
                 except Exception:                      # noqa: BLE001
                     pass
+    if needed and not cur:
+        _ver_mark(out_dir)          # что было чем обновить — обновлено
 
     tex_map = _png_map(out_dir)
     print("[INU tex] .txd найдено=%d, извлечено=%d → %d текстур в %s"

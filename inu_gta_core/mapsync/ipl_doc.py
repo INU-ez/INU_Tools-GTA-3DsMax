@@ -14,7 +14,8 @@ How it works now
   :class:`Anchor` (model id, name, position, rotation). Before every write the
   row is found again by that content.
 * A LOD row is never tracked on its own: it is whatever row the model row's
-  ``lod_index`` points at in the file.
+  ``lod_index`` points at in the file. VC/III rows have no ``lod_index`` —
+  there it is the LOD model's row standing at the model's spot.
 * While editing, ``lod_index`` values are held as references between row
   objects, not numbers. Deleting, appending, reordering can't break them; the
   final numbers are computed once, at :meth:`IplEditor.commit`.
@@ -31,7 +32,8 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from ..ipl import IplInstance, _format_inst_line, _parse_inst_line, _tokens
+from ..ipl import (IplInstance, _format_inst_line, _parse_inst_line, _tokens,
+                   is_lod_name, strip_lod_marker)
 from .textfile import TextLines
 
 IPL_SECTIONS = ('inst', 'cull', 'path', 'grge', 'enex', 'pick', 'jump',
@@ -117,6 +119,16 @@ def _rot_diff(inst: IplInstance, rot) -> float:
     d = abs(inst.rot_x * rot[0] + inst.rot_y * rot[1]
             + inst.rot_z * rot[2] + inst.rot_w * rot[3])
     return 1.0 - min(d, 1.0)
+
+
+def _is_lod_of(lod_name: str, name: str) -> bool:
+    """III/VC pair a model with its LOD by name (FindRelatedModel: equal
+    after the first 3 characters); «LOD<name>» is the addon's own spelling."""
+    lo, nm = lod_name.lower(), name.lower()
+    if lo == nm or not is_lod_name(lod_name):
+        return False
+    return ((len(lo) > 3 and lo[3:] == nm[3:])
+            or strip_lod_marker(lod_name).lower() == nm)
 
 
 class IplDoc:
@@ -310,6 +322,7 @@ class IplEditor:
         self.removes: List[RemoveResult] = []
         self.messages: List[Message] = []
         self._lod_candidates: list = []   # (RemoveResult, Row)
+        self._lod_grid = None             # 1 m cell -> LOD-named file rows
         self._committed = False
 
     # ── lookup on the live (edited) rows ──
@@ -341,6 +354,82 @@ class IplEditor:
         row = Row(None, inst, '', self.game, self.fla)
         self.rows.append(row)
         return row
+
+    def _lod_rows_near(self, pos):
+        """File rows with a LOD name in the 1 m cells around *pos*."""
+        if self._lod_grid is None:
+            self._lod_grid = {}
+            for r in self.rows:
+                if (r.line is None or r.inst is None
+                        or not is_lod_name(r.inst.model_name)):
+                    continue
+                try:
+                    key = (int(r.inst.pos_x // 1), int(r.inst.pos_y // 1))
+                except (ValueError, OverflowError):
+                    continue
+                self._lod_grid.setdefault(key, []).append(r)
+        try:
+            cx, cy = int(pos[0] // 1), int(pos[1] // 1)
+        except (ValueError, OverflowError):
+            return
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                yield from self._lod_grid.get((cx + dx, cy + dy), ())
+
+    def _lod_taken(self, row: Row, r: Row, d2: float) -> bool:
+        """LOD row *r* belongs to other placements of *row*'s model: as many
+        of them (still without a LOD) stand as close to it as *row* (*d2*)
+        as there are free rows of that LOD at its spot."""
+        p = (r.inst.pos_x, r.inst.pos_y, r.inst.pos_z)
+        lim = max(d2, ANCHOR_TOL * ANCHOR_TOL)
+        others = sum(1 for o in self._by_mid.get(int(row.cur.model_id), ())
+                     if o is not row and not o.deleted and o.lod is None
+                     and _dist2(o.cur, p) <= lim)
+        if not others:
+            return False
+        free = sum(1 for o in self._by_mid.get(int(r.inst.model_id), ())
+                   if not o.deleted and id(o) not in self.claimed
+                   and id(o) not in self.reserved
+                   and _dist2(o.inst, p) <= ANCHOR_TOL * ANCHOR_TOL)
+        return others >= free
+
+    def _lod_by_content(self, row: Row,
+                        lod: Optional[IplInstance] = None) -> Optional[Row]:
+        """VC/III rows have no lod_index, so their LOD row is found by content:
+        a free row of *lod*'s model where *row* stands in the file (a new row:
+        where *lod* goes), else a row the game pairs with *row* by name.
+        A row nearer to another placement of the same model is left to it."""
+        spot = row.inst if row.line is not None else None
+        if lod is not None:
+            for s, tol in ((spot, MATCH_TOL), (lod, ANCHOR_TOL)):
+                if s is None:
+                    continue
+                r = self._find(Anchor(int(lod.model_id), lod.model_name,
+                                      (s.pos_x, s.pos_y, s.pos_z)), tol)
+                if r is not None and s is spot and self._lod_taken(
+                        row, r, _dist2(r.inst, (s.pos_x, s.pos_y, s.pos_z))):
+                    r = None    # a nearer placement of the model owns it
+                if r is not None and s is lod and any(
+                        o is not row and not o.deleted and _dist2(
+                            o.cur, (r.inst.pos_x, r.inst.pos_y, r.inst.pos_z))
+                        <= ANCHOR_TOL * ANCHOR_TOL
+                        for o in self._by_mid.get(int(row.cur.model_id), ())):
+                    r = None    # another placement stands there: its LOD
+                if r is not None:
+                    return r
+        if spot is None:
+            return None
+        p = (spot.pos_x, spot.pos_y, spot.pos_z)
+        best, best_d = None, MATCH_TOL * MATCH_TOL
+        for r in self._lod_rows_near(p):
+            if (r.deleted or id(r) in self.claimed or id(r) in self.reserved
+                    or int(r.inst.model_id) == int(spot.model_id)
+                    or not _is_lod_of(r.inst.model_name, spot.model_name)):
+                continue
+            d2 = _dist2(r.inst, p)
+            if d2 <= best_d and not self._lod_taken(row, r, d2):
+                best, best_d = r, d2
+        return best
 
     # ── public operations ──
     def reserve(self, anchor: Anchor) -> bool:
@@ -387,6 +476,8 @@ class IplEditor:
             lod_new = copy.copy(lod)
             lod_new.lod_index = -1
             cur = row.lod
+            if cur is None and row.style != 'SA':
+                cur = self._lod_by_content(row, lod_new)
             if (cur is not None and not cur.deleted and cur.inst is not None
                     and id(cur) not in self.claimed
                     and id(cur) not in self.reserved
@@ -422,8 +513,13 @@ class IplEditor:
             return res
         row.deleted = True
         self.claimed.add(id(row))
-        if with_lod and row.lod is not None:
-            self._lod_candidates.append((res, row.lod))
+        lod = row.lod
+        if with_lod and lod is None and row.style != 'SA':
+            lod = self._lod_by_content(row)
+            if lod is not None:
+                self.claimed.add(id(lod))   # not the LOD of the next removal
+        if with_lod and lod is not None:
+            self._lod_candidates.append((res, lod))
         res.removed = True
         res._row = row
         self.removes.append(res)
@@ -563,7 +659,10 @@ def _same_values(a: str, b: str) -> bool:
         if x == y:
             continue
         try:
-            if abs(float(x) - float(y)) > 5e-7:
+            # 1e-6, а не 5e-7 (INU Max): строка с 7 знаками (14.1015625)
+            # после %.6f отличается ровно на 5e-7, в float — чуть больше, и
+            # нетронутая строка ванильного LAn2.IPL переписывалась
+            if abs(float(x) - float(y)) > 1e-6:
                 return False
         except ValueError:
             if x.lower() != y.lower():

@@ -22,7 +22,8 @@
 # - сетка «только IDE» — только из явно выбранной IDE; IPL без строк —
 #   сообщение (в Blender это грузило сеткой все модели всех IDE игры);
 # - порядок архивов: как грузит игра (gta3.img, gta_int.img, IMG из gta.dat,
-#   затем прочие); модель, которая есть в нескольких, берётся из последнего.
+#   затем прочие); модель, которая есть в нескольких, берётся из ПЕРВОГО
+#   (решение 2026-09-28: как игра внутри архива; было — из последнего).
 
 import math
 import os
@@ -80,20 +81,30 @@ def _game_imgs(root):
     for dp, dn, fn in os.walk(root):
         dn[:] = [d for d in dn if d.lower() not in _SKIP_DIRS]
         found += [os.path.join(dp, f) for f in fn if f.lower().endswith('.img')]
+    return order_archives(found, root)
 
+
+def order_archives(paths, root):
+    """Архивы в порядке загрузки игрой: models/gta3.img, models/gta_int.img,
+    IMG из gta.dat — затем остальные по алфавиту. Модель, которая есть в
+    нескольких, берётся из ПЕРВОГО (решение пользователя 2026-09-28: игра
+    внутри архива берёт первую запись — gta-reversed; порядок между
+    архивами по коду не проверен)."""
     def key(p):
         return os.path.normcase(os.path.abspath(p))
-    order = [os.path.join(root, 'models', 'gta3.img'),
-             os.path.join(root, 'models', 'gta_int.img')]
-    try:
-        from inu_gta_core.gta_dat import find_all_resources
-        order += list(find_all_resources(root).img_paths)
-    except Exception:                                  # noqa: BLE001
-        pass
+    order = []
+    if root and os.path.isdir(root):
+        order = [os.path.join(root, 'models', 'gta3.img'),
+                 os.path.join(root, 'models', 'gta_int.img')]
+        try:
+            from inu_gta_core.gta_dat import find_all_resources
+            order += list(find_all_resources(root).img_paths)
+        except Exception:                              # noqa: BLE001
+            pass
     rank = {}
     for i, p in enumerate(order):
         rank.setdefault(key(p), i)
-    return sorted(found, key=lambda p: (rank.get(key(p), len(order)), p.lower()))
+    return sorted(paths, key=lambda p: (rank.get(key(p), len(order)), p.lower()))
 
 
 def _read_ides(paths, models, source):
@@ -346,9 +357,9 @@ class _Importer:
     # — текстуры —
     def txd_pngs(self, txd):
         """{текстура: png} TXD из IMG. PNG пишутся один раз: рядом лежит
-        отпечаток записи архива (.src) — запись не изменилась, PNG берутся
-        готовые."""
-        from ..adapter.texture import extract_txd_bytes, _png_map, _safe_name
+        отпечаток записи архива и версии декода (.src) — не изменились, PNG
+        берутся готовые."""
+        from ..adapter.texture import extract_txd_bytes, _png_map, _safe_name, TEX_VER
         key = txd.lower()
         if key in self.txd_maps:
             return self.txd_maps[key]
@@ -357,7 +368,8 @@ class _Importer:
         if hit is not None:
             arch, real, off, size = hit
             folder = os.path.join(self.tex_root, _safe_name(real[:-4]))
-            stamp = "%s|%d|%d" % (os.path.normcase(os.path.abspath(arch)), off, size)
+            stamp = "v%d|%s|%d|%d" % (TEX_VER, os.path.normcase(os.path.abspath(arch)),
+                                      off, size)
             sp = os.path.join(folder, '.src')
             try:
                 with open(sp, 'r', encoding='utf-8') as f:
@@ -422,7 +434,7 @@ class _Importer:
     # — коллизия —
     def col_index(self):
         """{модель: (архив, запись, смещение, длина)} — модели COL всех
-        архивов, включая библиотеки (последний архив выигрывает)."""
+        архивов, включая библиотеки (первый архив выигрывает — как игра)."""
         if self._col_idx is None:
             from .. import cache
             idx = {}
@@ -438,9 +450,18 @@ class _Importer:
                 for entry, models in data.items():
                     for m, off, ln in models:
                         if m:
-                            idx[m.lower()] = (arch, entry, off, ln)
+                            idx.setdefault(m.lower(), (arch, entry, off, ln))
             self._col_idx = idx
         return self._col_idx
+
+    def col_blob(self, arch, entry):
+        """Байты записи .col (кэш на импорт)."""
+        key = (arch, entry.lower())
+        data = self.col_bytes.get(key)
+        if data is None:
+            data = self.reader(arch).read(entry) or b''
+            self.col_bytes[key] = data
+        return data
 
     def build_col(self, name, base):
         """Объекты коллизии модели (в пространстве модели) или []."""
@@ -451,11 +472,7 @@ class _Importer:
         if hit is None:
             return []
         arch, entry, off, ln = hit
-        key = (arch, entry.lower())
-        data = self.col_bytes.get(key)
-        if data is None:
-            data = self.reader(arch).read(entry) or b''
-            self.col_bytes[key] = data
+        data = self.col_blob(arch, entry)
         models = read_col(data[off:off + ln])
         if not models:
             return []
@@ -510,16 +527,14 @@ class _Importer:
 
     # — главный цикл —
     def run(self):
-        rt = pymxs.runtime
         from inu_gta_core.img import read_directory
-        from inu_gta_core.ipl import (read_ipl, lod_instance_indices, is_lod_name,
-                                      strip_lod_marker)
+        from inu_gta_core.ipl import read_ipl
         from inu_gta_core.game_versions import detect_game_from_img
         from inu_gta_core.gta_dat import list_ide_files
         from ..adapter import map_scene
-        from . import map_link as ML
 
-        # архивы: основной IMG (если задан) + найденные Find IMG
+        # архивы: основной IMG (если задан) + найденные Find IMG — в порядке
+        # загрузки игрой (модель из нескольких — из первого)
         archives, seen = [], set()
         for p in [settings.get('img_path', '') or ''] + list(settings.get('found_imgs', []) or []):
             if p and os.path.isfile(p):
@@ -529,6 +544,7 @@ class _Importer:
                     archives.append(p)
         if not archives:
             return 'ERROR', "No IMG: press «Find IMG» or set an archive"
+        archives = order_archives(archives, settings.get('game_root', '') or '')
         self.archives = archives
 
         # IDE и строки
@@ -573,14 +589,21 @@ class _Importer:
             if not instances:
                 return 'ERROR', "The IDE has no models"
 
-        # индекс имён всех архивов: последний архив выигрывает
+        # индекс имён всех архивов: первый архив (и первая запись) выигрывает
         self.img_index = {}
+        multi = set()
         for p in archives:
             try:
                 for e in read_directory(p):
-                    self.img_index[e.name.lower()] = (p, e.name, e.offset, e.size)
+                    k = e.name.lower()
+                    hit = self.img_index.get(k)
+                    if hit is None:
+                        self.img_index[k] = (p, e.name, e.offset, e.size)
+                    elif hit[0] != p and k.endswith('.dff'):
+                        multi.add(k)
             except Exception as e:                     # noqa: BLE001
                 self.errors.append("%s: %s" % (os.path.basename(p), e))
+        self.multi_arch = multi
         self.tex_root = _tex_root()
 
         # игра по архиву (как maybe_set_game_from_import INU)
@@ -600,10 +623,25 @@ class _Importer:
                     "Imported file = %s, but the active game = %s. Switch INU to «%s» — "
                     "otherwise export uses the wrong format." % (detected, self.game, detected))
 
+        return self.place(instances, inst_src, ide_models, ide_source, scene, game_msg)
+
+    def place(self, instances, inst_src, ide_models, ide_source, scene, game_msg='', *,
+              title="INU: Import from IMG", skip_existing=True, reuse_scene=True,
+              layer_of=None, noimg_text="no DFF in IMG"):
+        """Расстановка строк IPL (общая для вкладки Import и Import Map).
+        skip_existing — строки, уже стоящие в сцене (тот же ID, позиция,
+        поворот), пропускаются; reuse_scene — модель берётся из сцены вместо
+        повторного импорта; layer_of(idx, inst, is_lod) → (слой модели, слой
+        коллизии) — иначе Map_DFF / Map_LOD / Map_COL."""
+        rt = pymxs.runtime
+        from inu_gta_core.ipl import lod_instance_indices, is_lod_name, strip_lod_marker
+        from ..adapter import map_scene
+        from . import map_link as ML
+
         # что уже стоит в сцене: повторы строк пропускаются, модели берутся
         # из сцены вместо повторного импорта
         placed_by_id, scene_models = {}, {}
-        for mid, node, nm, pos, q in scene:
+        for mid, node, nm, pos, q in (scene if (skip_existing or reuse_scene) else ()):
             placed_by_id.setdefault(mid, []).append((pos, q, node))
             kind, base = classify_name(nm)
             scene_models.setdefault((kind, base.lower(), mid), node)
@@ -624,7 +662,7 @@ class _Importer:
         cancelled = False
         noimg_names = []
 
-        rt.progressStart("INU: Import from IMG")
+        rt.progressStart(title)
         rt.disableSceneRedraw()
         try:
             with pymxs.undo(False):
@@ -645,7 +683,7 @@ class _Importer:
                     rows = ML.inst_rows(inst, with_scale)
                     q = _unit((inst.rot_x, inst.rot_y, inst.rot_z, inst.rot_w))
                     pos = (inst.pos_x, inst.pos_y, inst.pos_z)
-                    hit = find_placed(inst.model_id, pos, q)
+                    hit = find_placed(inst.model_id, pos, q) if skip_existing else None
                     if hit is not None:
                         skip_placed += 1
                         inst_node[idx] = hit
@@ -656,7 +694,8 @@ class _Importer:
                     emb_col = []
                     if model is None:
                         base = (strip_lod_marker(name) if is_lod else name).lower()
-                        src = scene_models.get(('LOD' if is_lod else 'DFF', base, inst.model_id))
+                        src = scene_models.get(('LOD' if is_lod else 'DFF', base, inst.model_id)) \
+                            if reuse_scene else None
                         if src is not None:
                             tree = map_scene.descendants(src)
                             model = _Model(tree, [True] + [False] * (len(tree) - 1),
@@ -705,8 +744,10 @@ class _Importer:
                         else:
                             texts.append("")
                     owner = model.main + 1 if main_props.get('inu_ipl_uuid', '""') != '""' else 0
+                    lay, col_lay = (layer_of(idx, inst, is_lod) if layer_of is not None
+                                    else (model.layer, 'Map_COL'))
                     out = map_scene.place(model.nodes, model.placed > 0, tm, mask, texts,
-                                          owner, model.layer)
+                                          owner, lay)
                     model.placed += 1
                     inst_node[idx] = out[model.main] if out else None
                     imported += 1
@@ -722,7 +763,7 @@ class _Importer:
                                 col_nodes += made
                             except Exception as e:     # noqa: BLE001
                                 self.errors.append("%s: COL %s" % (name, e))
-                        map_scene.move_to(col_nodes, rows, 'Map_COL')
+                        map_scene.move_to(col_nodes, rows, col_lay)
 
                 # LOD-партнёры: строка модели → строка её LOD (lod_index)
                 mains, lods = [], []
@@ -755,7 +796,7 @@ class _Importer:
             if skip_lod:
                 why.append("%d LOD — press «LOD» to import them" % skip_lod)
             if skip_noimg:
-                why.append("%d no DFF in IMG" % skip_noimg)
+                why.append("%d %s" % (skip_noimg, noimg_text))
             if skip_noname:
                 why.append("%d no model name (not in IDE)" % skip_noname)
             msg += ", skipped: %d (%s)" % (skipped, ", ".join(why))
@@ -770,12 +811,18 @@ class _Importer:
                 self.n_col, (", %d with an empty COL record (no geometry)" % self.n_col_empty)
                 if self.n_col_empty else ""))
         if noimg_names:
-            extra.append("No DFF in IMG, e.g.: " + ", ".join(noimg_names))
+            extra.append("%s, e.g.: %s" % (noimg_text[0].upper() + noimg_text[1:],
+                                           ", ".join(noimg_names)))
+        multi = [n for n in getattr(self, 'multi_arch', ()) if n[:-4] in models]
+        if multi:
+            extra.append("Models in several archives (taken from the first in the "
+                         "game load order): %d" % len(multi))
         if cancelled:
             extra.insert(0, "Cancelled — objects already created stay in the scene.")
         for e in self.errors[:5]:
             print("[INU map] %s" % e)
-        lines = [msg] + extra + self.notes + ["Error: " + e for e in self.errors[:5]]
+        lines = [msg] + extra + list(getattr(self, 'infos', [])) + self.notes + \
+            ["Error: " + e for e in self.errors[:5]]
         level = 'WARNING' if (self.errors or cancelled or self.notes) else 'INFO'
         return level, "\n".join(lines)
 

@@ -172,6 +172,19 @@ def uv_anim_dict(materials):
     return UVAnimDict(anims=anims) if anims else None
 
 
+def keyframe_uv_materials(materials):
+    """Имена материалов с UV-анимацией в режиме «Keyframes»: в Max он ещё не
+    сделан — uv_anim_dict пишет им прокрутку Speed U/V (для предупреждения)."""
+    out = []
+    for md in materials:
+        p = md.props or {}
+        if p.get('uv_anim_write') and p.get('uv_anim_mode') == 'KEYFRAME':
+            name = md.name or p.get('animation_name') or 'uvanim'
+            if name not in out:
+                out.append(name)
+    return out
+
+
 # ── геометрия ────────────────────────────────────────────────────────
 
 def _corner(ch, f, k):

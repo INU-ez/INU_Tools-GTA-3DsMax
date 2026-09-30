@@ -70,15 +70,16 @@ def bake(shadows=False, over=False):
     use_hdri = bool(g('prelight_use_hdri', False))
     lamps, skipped = PS.lights(allowed) if allowed else ([], {})
     notes = []
-    env_col = None
+    if skipped:
+        notes.append("Not used: %s" % ", ".join("%d %s" % (n, k) for k, n in skipped.items()))
+    env_src = None
     if use_hdri:
-        env_col, has_map = PS.env_color()
-        if has_map:
-            notes.append("The environment map is not sampled yet — the background colour is used")
-    if not lamps and not (use_hdri and env_col is not None):
+        env_src, env_notes = PS.env_source()
+        notes += env_notes
+    if not lamps and env_src is None:
         why = ("all light types are off (Point / Sun / Spot / Area)" if not allowed
                else "no visible lights in the scene")
-        return 'WARNING', "Nothing to bake: %s." % why
+        return 'WARNING', "\n".join(["Nothing to bake: %s." % why] + notes)
     if shadows and not PS.fast():
         return 'ERROR', ("Bake with shadows needs the INU plugin: press Install / Update "
                          "INU in the launcher and restart 3ds Max.")
@@ -109,8 +110,8 @@ def bake(shadows=False, over=False):
                 chan = PS.LAYER_CHAN[layer]
                 sh = _shadows(PS, PM, lamps, pos, faces) if shadows else None
                 env = None
-                if use_hdri and env_col is not None:
-                    env = np.tile(np.asarray(env_col, dtype=np.float32), (len(faces) * 3, 1))
+                if env_src is not None:
+                    env = PS.env_sample(env_src, np.asarray(n_c, dtype=np.float32).reshape(-1, 3))
                 total = PM.light_total(pos, faces, n_c, lamps, sh, model=model,
                                        ambient=ambient, intensity=intensity,
                                        over=over, env=env)
@@ -131,14 +132,15 @@ def bake(shadows=False, over=False):
     finally:
         if shadows:
             PS.occlusion_end()
+        PS.env_release()
     if not done:
-        return 'WARNING', "Nothing baked" + (": " + ", ".join(failed[:5]) if failed else "")
+        return 'WARNING', "\n".join(["Nothing baked" + (": " + ", ".join(failed[:5])
+                                                        if failed else "")] + notes)
     what = "/".join(sorted(layers))
     msg = ("Baked from lights: %d objects" if shadows else "Baked to '%s' from %%d objects" % what) % done
-    msg += " (%d light(s)%s, %.1f s)" % (len(lamps), " + background" if env is not None else "",
-                                          time.time() - t0)
-    if skipped:
-        notes.append("Not used: %s" % ", ".join("%d %s" % (n, k) for k, n in skipped.items()))
+    env_what = "" if env_src is None else (" + background" if 'color' in env_src
+                                           else " + environment map")
+    msg += " (%d light(s)%s, %.1f s)" % (len(lamps), env_what, time.time() - t0)
     if failed:
         notes.append("Not baked: %s" % ", ".join(failed[:5]))
     if other:

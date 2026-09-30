@@ -220,8 +220,11 @@ class ImgReader:
             raw = self._f.read(num * DIR_ENTRY_SIZE)
             self._entries = _parse_dir_records(raw)
 
+        # Одноимённые записи: действует ПЕРВАЯ — как в игре (gta-reversed,
+        # CStreaming::LoadCdDirectory: имя уже зарегистрировано → запись
+        # пропускается). INU Max; в Blender-ядре — последняя.
         for entry in self._entries:
-            self._lookup[entry.name.lower()] = entry
+            self._lookup.setdefault(entry.name.lower(), entry)
 
     def close(self):
         if self._f:
@@ -237,6 +240,14 @@ class ImgReader:
         e = self._lookup.get(entry_name.lower())
         if not e:
             return None
+        self._f.seek(e.offset * SECTOR)
+        return self._f.read(e.size * SECTOR)
+
+    def read_entry(self, e: ImgEntry) -> bytes:
+        """Data of one directory record (by its position, not by name —
+        duplicates and empty entries included)."""
+        if not e.size:
+            return b''
         self._f.seek(e.offset * SECTOR)
         return self._f.read(e.size * SECTOR)
 
@@ -470,7 +481,7 @@ class ImgWriter:
                     raw = df.read()
                 for i, e in enumerate(_parse_dir_records(raw)):
                     self._entries.append(e)
-                    self._lookup[e.name.lower()] = i
+                    self._lookup.setdefault(e.name.lower(), i)   # первая — как игра
             self._f.seek(0, 2)
             self._end_pos = self._f.tell()
             return self
@@ -491,7 +502,7 @@ class ImgWriter:
         for i, e in enumerate(_parse_dir_records(
                 self._f.read(num * DIR_ENTRY_SIZE))):
             self._entries.append(e)
-            self._lookup[e.name.lower()] = i
+            self._lookup.setdefault(e.name.lower(), i)       # первая — как игра
         # Remember current EOF so append operations don't have to
         # seek-to-end every time (which costs a syscall).
         self._f.seek(0, 2)
@@ -558,6 +569,17 @@ class ImgWriter:
         self._lookup[filename.lower()] = len(self._entries) - 1
         return 'added'
 
+    def append_entry(self, filename: str, data: bytes) -> None:
+        """Append a NEW directory record as is — no lookup, no name check
+        (rebuild_img: keeps duplicate names and empty entries of the source
+        archive, which ``add`` would merge or drop)."""
+        if self._f is None:
+            raise RuntimeError("ImgWriter used outside its 'with' block")
+        n = sectors_needed(len(data))
+        offset = self._append(data + b'\x00' * (n * SECTOR - len(data)))
+        self._entries.append(ImgEntry(name=filename, offset=offset, size=n))
+        self._lookup.setdefault(filename.lower(), len(self._entries) - 1)
+
     def __exit__(self, *args):
         if self._f is not None:
             try:
@@ -609,26 +631,36 @@ def rebuild_img(filepath: str) -> dict:
     version = detect_img_version(filepath)
     old_size = os.path.getsize(filepath)
 
-    # 1. Read every live entry's (sector-aligned) data.
+    # 1. Read every directory record's (sector-aligned) data BY POSITION —
+    #    INU Max: reading by name returned one duplicate for both records and
+    #    ``if data`` dropped empty records (vanilla III gta3.img has 4, VC
+    #    gta3.img 11 duplicate names), so the rebuilt directory lost entries.
     with ImgReader(filepath) as r:
-        blobs = [(e.name, r.read(e.name)) for e in r.entries]
+        blobs = [(e.name, r.read_entry(e)) for e in r.entries]
 
-    # 2. Write a fresh, compacted archive beside the original.
+    # 2. Write a fresh, compacted archive beside the original — same records
+    #    in the same order.
     tmp = filepath + '.rebuild_tmp'
     tmp_dir = _sibling_dir_path(tmp)
     for _p in (tmp, tmp_dir):
         if os.path.exists(_p):
             os.remove(_p)
-    create_img(tmp, version=version)
-    with ImgWriter(tmp, version=version, reserve_entries=len(blobs)) as w:
-        for name, data in blobs:
-            if data:
-                w.add(name, data)
-
-    # 3. Atomically swap in the rebuilt archive (+ sibling .dir for VER1).
-    os.replace(tmp, filepath)
-    if version == IMG_VERSION_1 and os.path.exists(tmp_dir):
-        os.replace(tmp_dir, _sibling_dir_path(filepath))
+    try:
+        create_img(tmp, version=version)
+        with ImgWriter(tmp, version=version, reserve_entries=len(blobs)) as w:
+            for name, data in blobs:
+                w.append_entry(name, data)
+        # 3. Atomically swap in the rebuilt archive (+ sibling .dir for VER1).
+        os.replace(tmp, filepath)
+        if version == IMG_VERSION_1 and os.path.exists(tmp_dir):
+            os.replace(tmp_dir, _sibling_dir_path(filepath))
+    finally:
+        for _p in (tmp, tmp_dir):
+            if os.path.exists(_p):
+                try:
+                    os.remove(_p)
+                except OSError:
+                    pass
 
     new_size = os.path.getsize(filepath)
     return {'entries': len(blobs), 'old_size': old_size,

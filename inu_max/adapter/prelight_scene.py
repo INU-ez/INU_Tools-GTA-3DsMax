@@ -521,17 +521,22 @@ _TYPES = {'omnilight': 'POINT', 'directionallight': 'SUN',
 def lights(allowed):
     """(лампы для запекания [словари], пропущенные: {причина: число}).
     Лампа учитывается, если включена, видна во вьюпорте и рендерится
-    (как visible_get / hide_render в Blender), тип — в allowed."""
+    (как visible_get / hide_render в Blender), тип — в allowed. Видимые
+    лампы других классов — в пропущенные с именами."""
     import math
     ensure()
-    out, skipped = [], {}
+    out, skipped, other = [], {}, []
     for rec in _rt().inuPlLights():
         cls, name, on, hidden, rend = str(rec[0]), str(rec[1]), bool(rec[2]), bool(rec[3]), bool(rec[4])
+        if not on or hidden or not rend:
+            continue
         kind = _TYPES.get(cls.lower())
         if kind is None:
-            skipped['photometric/other'] = skipped.get('photometric/other', 0) + 1
+            # стандартной Area-лампы в Max 2018+ нет; фотометрические (кд / лм / лк),
+            # Arnold, V-Ray — свои единицы, Skylight — купол; не переводим
+            other.append("%s (%s)" % (name, cls))
             continue
-        if not on or hidden or not rend or kind not in allowed:
+        if kind not in allowed:
             continue
         p, z = rec[9], rec[10]
         L = {'type': kind, 'name': name,
@@ -547,24 +552,95 @@ def lights(allowed):
             L['cos_out'] = math.cos(math.radians(float(rec[12])) / 2.0)
             L['cos_in'] = math.cos(math.radians(float(rec[11])) / 2.0)
         out.append(L)
+    if other:
+        why = ("light(s) not Omni / Spot / Direct: %s%s — only those are baked; sky, "
+               "photometric and renderer (Arnold, V-Ray…) lights are not converted"
+               % (", ".join(other[:5]), ", …" if len(other) > 5 else ""))
+        skipped[why] = len(other)
     return out, skipped
 
 
-def env_color():
-    """Окружение сцены для «HDRI»: цвет фона (0..1) или None. Карта
-    окружения пока не поддерживается — сообщается отдельно."""
+def env_source():
+    """Окружение сцены для «HDRI» (как _world_env_sample Blender): карта
+    окружения — Bitmap со Spherical Environment (equirect, как HDRI мира
+    Blender), иначе цвет фона. (источник | None, [сообщения]).
+    Источник: {'color': (r,g,b)} или {'path', 'u_offset', 'level',
+    'offset', 'amount'}."""
     rt = _rt()
+    notes = []
+    m = None
+    try:
+        if rt.useEnvironmentMap:
+            m = rt.environmentMap
+    except Exception:                                  # noqa: BLE001
+        m = None
+    if m is not None:
+        try:
+            ok = (rt.classOf(m) == rt.Bitmaptexture and int(m.coords.mappingType) == 1
+                  and int(m.coords.mapping) == 0)
+            path = str(m.fileName or '') if ok else ''
+        except Exception:                              # noqa: BLE001
+            ok, path = False, ''
+        if ok and path and os.path.isfile(path):
+            c, o = m.coords, m.output
+            ignored = [n for n, v, d in (('W Angle', c.W_Angle, 0.0), ('V Offset', c.V_Offset, 0.0),
+                                         ('U Tiling', c.U_Tiling, 1.0), ('V Tiling', c.V_Tiling, 1.0))
+                       if abs(float(v) - d) > 1e-6]
+            if ignored:
+                notes.append("Environment map: %s not used (only U Offset rotates the map)"
+                             % ", ".join(ignored))
+            return dict(path=path, u_offset=float(c.U_Offset), level=float(o.rgb_level),
+                        offset=float(o.RGB_Offset), amount=float(o.Output_Amount)), notes
+        notes.append("The environment map is not a Bitmap with Spherical Environment mapping "
+                     "(or the file is missing) — the background colour is used")
     try:
         c = rt.backgroundColor
-        col = (float(c.r) / 255.0, float(c.g) / 255.0, float(c.b) / 255.0)
+        return {'color': (float(c.r) / 255.0, float(c.g) / 255.0, float(c.b) / 255.0)}, notes
     except Exception:                                  # noqa: BLE001
-        col = None
-    has_map = False
-    try:
-        has_map = bool(rt.useEnvironmentMap) and rt.environmentMap is not None
-    except Exception:                                  # noqa: BLE001
-        pass
-    return col, has_map
+        return None, notes
+
+
+# Строки картинки окружения, прочитанные за запекание: {'key', 'bm', 'rows'}.
+# getPixels 2048 пикселей ≈ 3.4 мс — читаются только нужные строки.
+_ENV = {}
+
+
+def env_sample(src, dirs):
+    """(n,3) вклад окружения по направлениям dirs (мировые нормали углов):
+    цвет фона — всем, карта — пиксель по направлению (nearest, значения
+    getPixels без перевода в линейное — как image.pixels Blender) × Output."""
+    from ..ops import prelight_math as PM
+    n = len(dirs)
+    if 'color' in src:
+        return np.tile(np.asarray(src['color'], dtype=np.float32), (n, 1))
+    rt = _rt()
+    key = (src['path'], os.path.getmtime(src['path']))
+    if _ENV.get('key') != key:
+        env_release()
+        _ENV.update(key=key, bm=rt.openBitMap(src['path']), rows={})
+    bm, rows = _ENV['bm'], _ENV['rows']
+    w, h = int(bm.width), int(bm.height)
+    iy, ix = PM.env_pixel_index(dirs, w, h, src['u_offset'])
+    for y in np.unique(iy):
+        y = int(y)
+        if y not in rows:
+            px = rt.getPixels(bm, rt.Point2(0, y), w, linear=False)
+            rows[y] = np.array([(c.r, c.g, c.b) for c in px], dtype=np.float32) / 255.0
+    rgb = np.empty((n, 3), dtype=np.float32)
+    for y in np.unique(iy):
+        sel = iy == y
+        rgb[sel] = rows[int(y)][ix[sel]]
+    return PM.env_output(rgb, src['level'], src['offset'], src['amount'])
+
+
+def env_release():
+    bm = _ENV.get('bm')
+    _ENV.clear()
+    if bm is not None:
+        try:
+            _rt().close(bm)
+        except Exception:                              # noqa: BLE001
+            pass
 
 
 # ── тени ─────────────────────────────────────────────────────────────

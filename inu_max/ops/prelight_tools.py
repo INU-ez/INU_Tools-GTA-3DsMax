@@ -4,11 +4,13 @@
 # vc_smooth_between, prelight_foliage, foliage_color_reset, vc_smooth,
 # vc_contrast, vc_brightness, vc_gamma, lift_shadows); часть 3: вкладка
 # PreLight COL (tools/col_light.py: bake_col_light, clear_col_light_mats,
-# preview_col_light).
+# preview_col_light); часть 4: LightMap UV2 (ops/texture_ops.py).
 #
 # Формулы — ops/prelight_math.py. Операции пишут в АКТИВНЫЙ слой (Day /
 # Night) каждого меша; мазки VertexPaint этого слоя сперва вписываются в
 # базу (решение пользователя). Каждая операция возвращает (уровень, текст).
+
+import os
 
 import numpy as np
 
@@ -414,3 +416,99 @@ def col_preview_update():
     if node is not None:
         _col_preview_on(node)
         PS.redraw()
+
+
+# ── часть 4: LightMap UV2 (ops/texture_ops.py Blender-версии) ─────────
+
+def _lm():
+    from ..adapter import lightmap_scene
+    return lightmap_scene
+
+
+def lm_apply(path):
+    """«Add LightMap»: картинка на UV2 (Multiply) на выделенные меши."""
+    PS, LM = _ps(), _lm()
+    if not path or not os.path.isfile(path):
+        return 'ERROR', "File not found"
+    nodes, _other = PS.selected_meshes()
+    if not nodes:
+        return 'ERROR', "Select a mesh object!"
+    applied = skipped = 0
+    with undo_block("INU: Apply LightMap UV2"):
+        for node in nodes:
+            a, s = LM.apply(node, path)
+            applied += a
+            skipped += s
+            LM.set_maps(node, day=path, mode='DAY')
+    msg = "LightMap UV2: %d materials" % applied
+    if skipped:
+        msg += " | skipped (no color input): %d" % skipped
+    return 'INFO', msg
+
+
+def lm_toggle(enable):
+    """Глаз: показать / скрыть LightMap UV2 (выделенные меши)."""
+    PS, LM = _ps(), _lm()
+    nodes, _other = PS.selected_meshes()
+    with undo_block("INU: Toggle LightMap UV2"):
+        n = sum(LM.toggle(node, enable) for node in nodes)
+    return 'INFO', "LightMap UV2: %s (%d)" % ("ON" if enable else "OFF", n)
+
+
+def lm_remove():
+    """«−»: убрать LightMap UV2 из материалов выделенных мешей."""
+    PS, LM = _ps(), _lm()
+    nodes, _other = PS.selected_meshes()
+    with undo_block("INU: Remove LightMap UV2"):
+        n = sum(LM.remove(node) for node in nodes)
+    return 'INFO', "LightMap UV2: %d removed" % n
+
+
+def lm_folder(folder, show='DAY'):
+    """«LightMap from folder…»: файл <имя>_d — день, <имя>_n — ночь (по
+    имени модели)."""
+    PS, LM = _ps(), _lm()
+    if not folder or not os.path.isdir(folder):
+        return 'ERROR', "Folder not found"
+    nodes, _other = PS.selected_meshes()
+    if not nodes:
+        return 'ERROR', "Select a mesh object!"
+    found = LM.scan_folder(folder)
+    if not found:
+        return 'ERROR', "No maps with the _d / _n suffix in the folder"
+    n_day = n_night = n_obj = 0
+    missing = []
+    with undo_block("INU: LightMap from folder"):
+        for node in nodes:
+            maps = next((found[c.lower()] for c in LM.name_candidates(node)
+                         if c.lower() in found), None)
+            if not maps:
+                missing.append(str(node.name))
+                continue
+            LM.set_maps(node, day=maps.get('DAY', ''), night=maps.get('NIGHT', ''))
+            n_day += 'DAY' in maps
+            n_night += 'NIGHT' in maps
+            want = show if show in maps else next(iter(maps))
+            LM.apply(node, maps[want])
+            LM.set_maps(node, mode=want)
+            n_obj += 1
+    if not n_obj:
+        return 'ERROR', "No maps found in the folder for the selected models"
+    msg = "LightMap: models %d, day %d, night %d" % (n_obj, n_day, n_night)
+    if missing:
+        msg += " | without maps: " + ", ".join(missing[:5]) + (
+            " +%d" % (len(missing) - 5) if len(missing) > 5 else "")
+    return 'INFO', msg
+
+
+def lm_daynight(mode):
+    """Day / Night: выделенные меши, без выделения — вся сцена."""
+    PS, LM = _ps(), _lm()
+    nodes, _other = PS.selected_meshes()
+    if not nodes:
+        nodes = LM.scene_nodes_with_maps()
+    with undo_block("INU: LightMap day/night"):
+        done = sum(1 for node in nodes if LM.set_mode(node, mode))
+    if not done:
+        return 'WARNING', "No loaded maps — \"LightMap from folder…\""
+    return 'INFO', "LightMap: %s (%d)" % ("day" if mode == 'DAY' else "night", done)

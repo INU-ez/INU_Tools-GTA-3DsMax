@@ -29,6 +29,11 @@ def _tools():
     return prelight_tools
 
 
+def _lms():
+    from ..adapter import lightmap_scene
+    return lightmap_scene
+
+
 def _safe(fn, default=None):
     try:
         return fn()
@@ -201,12 +206,16 @@ class LightingPanel(BuildMixin, QtWidgets.QWidget):
                        "baking prelight"),
             self._tbtn("Spot", 'prelight_use_spot', True, "Include Spot lamps (with cone) when "
                        "baking prelight"),
-            self._tbtn("Area", 'prelight_use_area', True, "Include Area lamps when baking "
-                       "prelight (treated as a point source). 3ds Max photometric lights are "
-                       "not used"),
-            self._tbtn("HDRI", 'prelight_use_hdri', False, "Add world lighting: the scene "
-                       "environment (Rendering > Environment) colour is added along the "
-                       "normal. Can be combined with lamps via the Point/Sun/Spot/Area toggles")]]))
+            self._tbtn("Area", 'prelight_use_area', True, "Area lamps (Blender INU bakes them as "
+                       "a point source). 3ds Max has no standard Area light: area-shaped lights "
+                       "(photometric, Arnold, V-Ray…) have their own intensity units, not the "
+                       "Omni multiplier, so they are NOT baked — the bake result names them "
+                       "(also in the MAXScript Listener). Use Omni / Spot / Direct lights"),
+            self._tbtn("HDRI", 'prelight_use_hdri', False, "Add world lighting "
+                       "(Rendering > Environment): the environment map (Bitmap with Spherical "
+                       "Environment mapping, e.g. an HDRI) is sampled along the normal; without "
+                       "it — the background colour. Can be combined with lamps via the "
+                       "Point/Sun/Spot/Area toggles")]]))
         lay.addWidget(FusedBlock([[
             _btn("Day → Night", "Copy vertex colors between attributes (Day ↔ Night)",
                  lambda: run("Day → Night", 'copy_layer', 'Day', 'Night')),
@@ -214,19 +223,26 @@ class LightingPanel(BuildMixin, QtWidgets.QWidget):
                  lambda: run("Night → Day", 'copy_layer', 'Night', 'Day'))]]))
 
         # LightMap UV2 — часть 4
-        stub = self._stub
+        self._lm_eye = icon_btn('eye_off', "Toggle LightMap UV2 display", None)
+        self._lm_eye.setCheckable(True)
+        self._lm_eye.clicked.connect(lambda on: run("LightMap UV2", 'lm_toggle', bool(on)))
         lay.addWidget(FusedBlock([[
-            icon_btn('eye_off', "Toggle LightMap UV2 display", stub("LightMap UV2 (toggle)")),
+            self._lm_eye,
             _btn("Add LightMap", "Apply a LightMap texture on UV2 (Multiply) for selected "
-                 "objects", stub("Add LightMap")),
+                 "objects", self._lm_add),
             icon_btn('remove', "Remove LightMap UV2 from selected objects' materials",
-                     stub("Remove LightMap UV2"))]]))
+                     lambda: run("Remove LightMap UV2", 'lm_remove'))]]))
+        self._lm_day = _btn("Day", "Show the day LightMap on the models (selected; without a "
+                            "selection — the whole scene)",
+                            lambda: run("LightMap Day", 'lm_daynight', 'DAY'), checkable=True)
+        self._lm_night = _btn("Night", "Show the night LightMap on the models (selected; "
+                              "without a selection — the whole scene)",
+                              lambda: run("LightMap Night", 'lm_daynight', 'NIGHT'), checkable=True)
         lay.addWidget(FusedBlock([[
             _btn("LightMap from folder…", "Load LightMaps for the selected models from a "
                  "folder: <name>_d = day map, <name>_n = night map (matched by object name)",
-                 stub("LightMap from folder")),
-            _btn("Day", "Show the day LightMap on the models", stub("LightMap Day")),
-            _btn("Night", "Show the night LightMap on the models", stub("LightMap Night"))]]))
+                 self._lm_folder),
+            self._lm_day, self._lm_night]]))
 
         # коррекция превью
         b = self._box()
@@ -369,9 +385,47 @@ class LightingPanel(BuildMixin, QtWidgets.QWidget):
         if on:                                   # превью — на активном меше и его слое
             _safe(lambda: _tools().col_preview_update())
 
-    def _stub(self, label):
-        return lambda: QtWidgets.QMessageBox.information(
-            self, "INU Tools", "\"%s\" is not implemented yet (LightMap UV2 — part 4)." % label)
+    # ── LightMap UV2 (часть 4) ────────────────────────────────────────
+    _LM_FILTERS = [("Images (*.png *.jpg *.jpeg *.tga *.bmp *.tif *.tiff)",
+                    ["*.png", "*.jpg", "*.jpeg", "*.tga", "*.bmp", "*.tif", "*.tiff"]),
+                   ("All Files (*.*)", ["*"])]
+
+    def _pick(self, title, mode, filters=None):
+        from .file_dialog import INUFileDialog
+        dlg = INUFileDialog(self, title, mode=mode, filters=filters or [], key='lightmap',
+                            accept_label="Select")
+        if not dlg.exec():
+            return None
+        if mode == 'folder':
+            return dlg.selected_folder()
+        files = dlg.selected_files()
+        return files[0] if files else None
+
+    def _lm_add(self):
+        path = self._pick("INU: Add LightMap (UV2)", 'open', self._LM_FILTERS)
+        if path:
+            self._run("Add LightMap", 'lm_apply', path)
+
+    def _lm_folder(self):
+        folder = self._pick("INU: LightMap from folder", 'folder')
+        if folder:
+            self._run("LightMap from folder", 'lm_folder', folder)
+
+    def _lm_refresh(self, node):
+        LM = _safe(_lms, None)
+        has, shown, mode = False, False, ''
+        if LM is not None and node is not None:
+            has, shown = _safe(lambda: LM.state(node), (False, False)) or (False, False)
+            mode = _safe(lambda: LM.mode_of(node), '') or ''
+        self._lm_eye.blockSignals(True)
+        self._lm_eye.setEnabled(bool(has))
+        self._lm_eye.setChecked(bool(shown))
+        self._lm_eye.setIcon(icon('eye' if shown else 'eye_off'))
+        self._lm_eye.blockSignals(False)
+        for b, m in ((self._lm_day, 'DAY'), (self._lm_night, 'NIGHT')):
+            b.blockSignals(True)
+            b.setChecked(mode == m)
+            b.blockSignals(False)
 
     # ── пресеты ───────────────────────────────────────────────────────
     def fill_presets(self):
@@ -489,6 +543,7 @@ class LightingPanel(BuildMixin, QtWidgets.QWidget):
             sp.blockSignals(False)
         self.fill_presets()
         self._col_refresh(node if mesh else None)
+        self._lm_refresh(node if mesh else None)
 
 
 class AdvancedSettings(BuildMixin, QtWidgets.QWidget):

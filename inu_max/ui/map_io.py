@@ -4,9 +4,12 @@
 #   «ID Manager» (пресеты Model ID).
 # Состав, подписи (англ. из locale/eng.py INU) и условия показа — как в INU,
 # оформление — роллауты Kam's (widgets.py). Вкладка Import работает
-# (ops/map_import.py: Find IMG / Find IDE / Import); остальные операции пока
-# заглушки (dispatch → «not implemented»). Интерфейсные вещи работают: списки
-# файлов, пути, счётчики IDE/IPL и районы (ядро inu_gta_core), статусы.
+# (ops/map_import.py: Find IMG / Find IDE / Import); вкладка Export — связь
+# IDE / IPL (ops/map_link_ops.py: Add / Del / Export, Sync, Restore, Check,
+# Unlink, статусы — ops/map_link.py); IMG, вкладка Map, секции IPL, ID
+# Manager — пока заглушки (dispatch → «not implemented»). Интерфейсные вещи
+# работают: списки файлов, пути, счётчики IDE/IPL и районы (ядро
+# inu_gta_core).
 
 import math
 import os
@@ -501,8 +504,9 @@ class ExportTab(BuildMixin, QtWidgets.QWidget):
         b.addWidget(path)
         ext = kind.lower()
         add = self._act("Add", "upsert_" + ext,
-                        "Add: write/update the SELECTED models in the CHOSEN ."
-                        + ext)
+                        "Add: write/update the SELECTED models in the CHOSEN ." + ext
+                        + ". A model linked to another ." + ext + " is moved here (its "
+                        "row is removed from the old file)")
         dele = self._act("Del", "remove_" + ext,
                          "Del: remove the SELECTED models from the chosen ." + ext)
         b.addWidget(FusedBlock([[add, dele]]))
@@ -612,30 +616,29 @@ class ExportTab(BuildMixin, QtWidgets.QWidget):
         hl.addWidget(FusedBlock([name_btns[2:]]))
         self._sel_host.addWidget(row)
 
+        # статусы — как их считает ops/map_link (сравнение с тем, что уйдёт в
+        # файл; под-меш модели показывает её главный меш)
+        sc = rec = None
+        try:
+            from ..ops import map_link as ML
+            sc = ML.Scene()
+            rec = sc.rec(obj)
+            if rec is not None:
+                rec = sc.main_of(rec)
+        except Exception as e:                         # noqa: BLE001
+            if 'pymxs' not in str(e):
+                print("[INU] link status: %r" % (e,))
+        if rec is not None:
+            gp = rec.get                               # noqa: F811
+
         # IDE
-        mid = gp('model_id', 0)
         linked = gp('ide_linked', False)
-        last_id = gp('ide_last_model_id', 0)
         ide_file = gp('ide_target_file', '')
-        id_changed = linked and last_id > 0 and mid != last_id
-        if id_changed:
-            text, ok = "Not in IDE — Model ID changed (was %d)" % last_id, False
-        elif not linked or mid <= 0:
-            text, ok = "Not in IDE", None
+        if rec is not None:
+            text, ok = ML.ide_status(sc, rec)
         else:
-            drift = []
-            is_lod = snap.get('active_type') == 'LOD'
-            cur = gp('lod_draw_distance' if is_lod else 'draw_distance', 299.0)
-            if abs(cur - gp('ide_last_draw_distance', cur)) > 1e-3:
-                drift.append("DrawDist")
-            if gp('txd_name', '') != gp('ide_last_txd_name', ''):
-                drift.append("TXD")
-            if gp('ide_flags', 0) != gp('ide_last_flags', 0):
-                drift.append("Flags")
-            if drift:
-                text, ok = "In IDE, changed: " + ", ".join(drift), False
-            else:
-                text, ok = "In IDE (%s)" % (os.path.basename(ide_file) or "?"), True
+            text, ok = ("In IDE" if linked else "Not in IDE"), None
+        id_changed = text.startswith("Not in IDE — Model ID changed")
         o1 = icon_btn('text', "Open in text editor", lambda: _open_file(ide_file))
         o1.setEnabled(bool(ide_file) and has_sel)
         s1 = icon_btn('forward', "Sync from IDE: pull draw distance, TXD and "
@@ -654,7 +657,9 @@ class ExportTab(BuildMixin, QtWidgets.QWidget):
         # IPL
         uuid = gp('ipl_uuid', '')
         ipl_file = gp('ipl_target_file', '')
-        if not uuid:
+        if rec is not None:
+            text, ok = ML.ipl_status(sc, rec)
+        elif not uuid:
             if snap.get('active_type') == 'LOD':
                 text, ok = "LOD — written together with its model", None
             else:
@@ -692,13 +697,20 @@ class ExportTab(BuildMixin, QtWidgets.QWidget):
                       lambda: self._dispatch("Verify IMG", "verify_img_link"))
         v3.setEnabled(has_sel)
         e3 = self._main_btn("Export", "export_to_img",
-                            "Export DFF + TXD + COL directly into .img archive",
-                            has_sel and bool(target))
-        t3 = icon_btn('trash', "Remove selected models' DFF / TXD / COL from "
-                      "the IMG archive",
+                            "Export DFF + TXD + COL directly into .img archive "
+                            "(each model into its own IMG; the archive for the rest is "
+                            "chosen in the window). TXD and COL libraries are merged",
+                            has_sel)
+        r3 = icon_btn('arrows', "Rebuild IMG: compact the archive (%s) — dead space "
+                      "left by replaced entries is removed" % (os.path.basename(target)
+                                                               or "model's IMG"),
+                      lambda: self._dispatch("Rebuild IMG", "rebuild_img"))
+        r3.setEnabled(bool(target) and has_sel)
+        t3 = icon_btn('trash', "Remove selected models' DFF / LOD / COL (and TXD no "
+                      "other model uses) from their IMG archive",
                       lambda: self._dispatch("Remove from IMG", "remove_from_img"))
         t3.setEnabled(bool(img_file) and has_sel)
-        self._status_row(text, ok, [o3, v3, e3, t3])
+        self._status_row(text, ok, [o3, v3, e3, r3, t3])
 
 
 class IdeFlagsEditor(BuildMixin, QtWidgets.QWidget):
@@ -789,8 +801,6 @@ class MapTab(BuildMixin, QtWidgets.QWidget):
     район, бинарные и текстовые IPL, извлечение ресурсов, Import / Export
     Map, профайлер, BBox."""
 
-    _bbox_on = False            # как map_ops._bbox_mode_active в INU
-
     def __init__(self, dispatch, parent=None):
         super().__init__(parent)
         self._dispatch = dispatch
@@ -829,8 +839,9 @@ class MapTab(BuildMixin, QtWidgets.QWidget):
         for key, title, show_key in (('binary_ipls', "Binary IPLs",
                                       'show_binary_ipls'),
                                      ('text_ipls', "Text IPLs", 'show_text_ipls')):
-            scan = icon_btn('refresh', "Scan IMG archives and collect the list "
-                            "of binary IPLs for the selected region",
+            scan = icon_btn('refresh', "Scan the region: text IPLs from gta.dat and "
+                            "their binary <name>_stream*.ipl from the IMG archives. "
+                            "After the scan you can enable/disable individual files",
                             lambda: self._dispatch("Scan IPLs", "scan_binary_ipls"))
             ex = Expander(self, show_key, False, right=[scan])
             host = QtWidgets.QVBoxLayout()
@@ -860,8 +871,8 @@ class MapTab(BuildMixin, QtWidgets.QWidget):
         self._warn_cache.setAlignment(QtCore.Qt.AlignCenter)
         lay.addWidget(self._warn_cache)
         self._imp = QtWidgets.QPushButton("Import Map")
-        self._imp.setToolTip("Import GTA SA map: auto-discover IDE/IPL/IMG from "
-                             "the game folder")
+        self._imp.setToolTip("Import GTA SA map: IPLs of the region (gta.dat + binary "
+                             "stream IPLs), models from the cache (Extract resources)")
         self._imp.clicked.connect(lambda: self._dispatch("Import Map", "import_map"))
         self._exp = QtWidgets.QPushButton("Export Map")
         self._exp.setToolTip("Export the current selection as a ready-to-ship "
@@ -880,17 +891,23 @@ class MapTab(BuildMixin, QtWidgets.QWidget):
         self._bbox = QtWidgets.QPushButton()
         self._bbox.setCheckable(True)
         self._bbox.setFixedHeight(BTN_H)
-        self._bbox.setToolTip("Toggle every Map_ object between Bounding Box "
-                              "and Textured")
-        self._bbox.setChecked(MapTab._bbox_on)
-        self._bbox.toggled.connect(self._on_bbox)
-        self._on_bbox(MapTab._bbox_on)
+        self._bbox.setToolTip("Meshes farther than 300 m from the selection are shown "
+                              "as a box (Display as Box) — follows the selection; OFF — "
+                              "all meshes as they are")
+        self._bbox.clicked.connect(lambda _c=False: self._dispatch("BBox", "toggle_bbox"))
         lay.addWidget(self._bbox)
         self._fill_regions()
         self.refresh()
 
-    def _on_bbox(self, on):
-        MapTab._bbox_on = bool(on)
+    def _sync_bbox(self):
+        try:
+            from ..ops import map_tab
+            on = map_tab.bbox_active()
+        except Exception:                              # noqa: BLE001
+            on = False
+        self._bbox.blockSignals(True)
+        self._bbox.setChecked(on)
+        self._bbox.blockSignals(False)
         self._bbox.setText("BBox: ON" if on else "BBox: OFF")
 
     def _fill_regions(self):
@@ -954,8 +971,14 @@ class MapTab(BuildMixin, QtWidgets.QWidget):
             saved = _sel().scene_file()
         except Exception:                              # noqa: BLE001
             saved = ''
-        cache = bool(saved) and os.path.isdir(
-            os.path.join(os.path.dirname(saved), '.inu_cache'))
+        cache = False
+        if saved:
+            try:
+                from ..ops import map_tab
+                cache = map_tab.cache_has_models()
+            except Exception:                          # noqa: BLE001
+                cache = False
+        self._sync_bbox()
         self._warn_save.setVisible(not saved)
         self._extract.setEnabled(bool(saved))
         self._warn_cache.setVisible(bool(saved) and not cache)
@@ -1226,22 +1249,57 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
              self._act("From Game", "id_manager_from_game",
                        "Load occupied IDs from GTA SA IDE files")],
             [self._act("Create ID", "id_manager_create",
-                       "Fill the active ID preset (321-19999, all free)"),
+                       "Fill the active ID preset (321-19999): missing IDs are added as "
+                       "free, used IDs stay"),
              self._act("Extend FLA", "id_manager_extend",
                        "Add IDs (Fastman Limit Adjuster)")]]))
         ex.body.addWidget(self._act("Free phantoms", "id_manager_gc",
                                     "Free preset entries with no matching scene "
-                                    "object"))
+                                    "object (game IDs from «From Game» stay)"))
         ex.body.addWidget(FusedBlock([[
-            self._act("Clear All", "id_manager_clear", "Clear all occupied IDs"),
+            self._act("Clear All", "id_manager_clear", "Clear all occupied IDs (game IDs "
+                      "from «From Game» stay)"),
             self._btn("Open ID File", "Open the active ID preset file in a text "
                       "editor", self._open_preset)]]))
         b.addWidget(ex)
         lay.addWidget(b.box)
+        self._stamp = None
         self._fill_presets()
+        # сцена сменилась (другой пресет в .max) или пресет правили снаружи
+        # (блокнот, Blender) — перечитать
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(1500)
+        self._timer.timeout.connect(self._check_changed)
+        self._timer.start()
 
     def _act(self, label, key, tip):
         return self._btn(label, tip, lambda: self._dispatch(label, key))
+
+    # активный пресет — в сцене .max (ops/id_manager_ops), иначе последний
+    def _active(self):
+        try:
+            from ..ops import id_manager_ops
+            return id_manager_ops.active()
+        except Exception:                              # noqa: BLE001
+            return self._presets().sanitize(self._get('id_preset', self._presets().DEFAULT))
+
+    def _set_active(self, name):
+        try:
+            from ..ops import id_manager_ops
+            id_manager_ops.set_active(name)
+        except Exception:                              # noqa: BLE001
+            self._set('id_preset', self._presets().sanitize(name))
+
+    def _check_changed(self):
+        if not self.isVisible():
+            return
+        try:
+            cur = self._active()
+            st = (cur, self._presets().stamp(cur))
+        except Exception:                              # noqa: BLE001
+            return
+        if st != self._stamp:
+            self._fill_presets()
 
     @staticmethod
     def _btn(label, tip, slot):
@@ -1258,19 +1316,21 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
 
     def _fill_presets(self):
         ip = self._presets()
-        cur = self._get('id_preset', ip.DEFAULT)
+        cur = self._active()
         self._preset.blockSignals(True)
         self._preset.clear()
         for n in ip.list_presets():
             self._preset.addItem(n, n)
         i = self._preset.findData(cur)
-        self._preset.setCurrentIndex(max(0, i))
+        if i < 0:                    # пресета из сцены нет в папке — показать его
+            self._preset.addItem(cur, cur)
+            i = self._preset.findData(cur)
+        self._preset.setCurrentIndex(i)
         self._preset.blockSignals(False)
-        self._set('id_preset', self._preset.currentData())
         self.refresh()
 
     def _on_preset(self, i):
-        self._set('id_preset', self._preset.itemData(i))
+        self._set_active(self._preset.itemData(i))
         self._set('id_page', 0)
         self.refresh()
 
@@ -1292,23 +1352,33 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
         v.addWidget(bb)
         if dlg.exec() and name.text().strip():
             ip = self._presets()
-            src = self._get('id_preset', ip.DEFAULT) if copy.isChecked() else None
+            src = self._active() if copy.isChecked() else None
             if ip.create(name.text().strip(), src):
-                self._set('id_preset', name.text().strip())
+                # имя файла — «очищенное» (в INU ставилось сырое, и выбор
+                # пресета тихо не переключался)
+                self._set_active(ip.sanitize(name.text()))
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self, "INU Tools", "Preset already exists or could not be created")
             self._fill_presets()
 
     def _rename_preset(self):
         ip = self._presets()
-        cur = self._get('id_preset', ip.DEFAULT)
+        cur = self._active()
         new, ok = QtWidgets.QInputDialog.getText(self, "INU: Rename ID Preset",
                                                  "New name", text=cur)
-        if ok and new.strip() and ip.rename(cur, new.strip()):
-            self._set('id_preset', new.strip())
-            self._fill_presets()
+        if ok and new.strip():
+            if ip.rename(cur, new.strip()):
+                self._set_active(ip.sanitize(new))
+                self._fill_presets()
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self, "INU Tools", "Could not rename the preset (the name is taken, "
+                    "or it is 'default')")
 
     def _delete_preset(self):
         ip = self._presets()
-        cur = self._get('id_preset', ip.DEFAULT)
+        cur = self._active()
         if cur == ip.DEFAULT:
             QtWidgets.QMessageBox.information(
                 self, "INU Tools", "The 'default' preset cannot be removed.")
@@ -1317,14 +1387,14 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
                 self, "INU Tools", "Delete ID preset '%s'?" % cur) \
                 == QtWidgets.QMessageBox.Yes:
             ip.delete(cur)
-            self._set('id_preset', ip.DEFAULT)
+            self._set_active(ip.DEFAULT)
             self._fill_presets()
 
     def _open_preset(self):
         ip = self._presets()
-        path = ip.preset_path(self._get('id_preset', ip.DEFAULT))
+        path = ip.preset_path(self._active())
         if not os.path.isfile(path):
-            ip.create(self._get('id_preset', ip.DEFAULT))
+            ip.create(self._active())
         _open_file(path)
 
     def _on_search(self, text):
@@ -1335,7 +1405,9 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
     # — списки —
     def refresh(self):
         ip = self._presets()
-        free, used = ip.read(self._get('id_preset', ip.DEFAULT))
+        cur = self._active()
+        self._stamp = (cur, ip.stamp(cur))
+        free, used = ip.read(cur)
         self._lb_free.setText("Free: %d" % len(free))
         self._lb_used.setText("Used: %d" % len(used))
         self._lb_next.setText("Next free: %d" % free[0] if free else "")
@@ -1372,7 +1444,7 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
                 lbl = ElideLabel("%d %s" % (i, name))
                 grid.addWidget(lbl, r, c)
                 grid.addWidget(icon_btn('x', "Release ID", lambda i=i: self._dispatch(
-                    "Release ID %d" % i, "id_manager_release")), r, c + 1)
+                    "Release ID %d" % i, "id_manager_release:%d" % i)), r, c + 1)
             lay.addLayout(grid)
             if total > self._PER_PAGE:
                 # страницы: [◀] «21-40 / 57» [▶] (в INU — поле номера страницы)

@@ -653,6 +653,28 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         self._game_handlers += [self.ide_ipl.pages['EXPORT'].flags.rebuild,
                                 self.obj_ide.flags.rebuild]
         self._start_polling()
+        # слежение за связанными IDE / IPL (map_watch INU): файл изменён
+        # снаружи → связи перечитываются, статусы окна обновляются
+        self._link_watch = None
+        self._watch_err = False
+        self._watch_timer = QtCore.QTimer(self)
+        self._watch_timer.setInterval(2000)
+        self._watch_timer.timeout.connect(self._watch_tick)
+        self._watch_timer.start()
+
+    def _watch_tick(self):
+        import time
+        try:
+            from ..ops import map_link
+            if self._link_watch is None or not isinstance(self._link_watch, map_link.Watch):
+                self._link_watch = map_link.Watch()
+            if self._link_watch.tick(time.monotonic()):
+                self._sel_key = object()               # статусы — заново
+                self._poll_selection(force=True)
+        except Exception as e:                         # noqa: BLE001
+            if not self._watch_err and 'pymxs' not in str(e):
+                print("[INU] link watch: %r" % (e,))
+            self._watch_err = True
 
     # ---- ОКНО «LIGHTING»: панель INU «Lighting» (вкладки PreLight /
     # PreLight COL; подпанели PreLight — отдельными роллаутами, см.
@@ -884,6 +906,16 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         if key in self._MAP_OPS:
             self._run(lambda: self._do_map_op(key, label), label)
             return
+        if key.startswith('id_manager_'):
+            self._run(lambda: self._do_id_op(key, label), label)
+            return
+        if key in ('export_to_img', 'remove_from_img', 'verify_img_link', 'rebuild_img'):
+            self._run(lambda: self._do_img_op(key, label), label)
+            return
+        if key in ('scan_binary_ipls', 'extract_textures', 'import_map', 'map_export',
+                   'toggle_bbox'):
+            self._run(lambda: self._do_maptab_op(key, label), label)
+            return
         if key in ("setup:install", "setup:remove"):
             from . import setup_ui
             fn = (setup_ui.install_interactive if key == "setup:install"
@@ -905,15 +937,354 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         'scan_img_for_ipl': 'map_import',
         'scan_ide_for_ipl': 'map_import',
         'import_from_img': 'map_import',
+        # связь IDE / IPL (вкладка Export)
+        'upsert_ide': 'map_link_ops', 'remove_ide': 'map_link_ops',
+        'export_ide': 'map_link_ops', 'upsert_ipl': 'map_link_ops',
+        'remove_ipl': 'map_link_ops', 'export_ipl': 'map_link_ops',
+        'link_verify': 'map_link_ops', 'link_unlink': 'map_link_ops',
+        'ide_sync_from_file': 'map_link_ops', 'ide_sync_export': 'map_link_ops',
+        'ide_remove_link': 'map_link_ops', 'ipl_restore_coords': 'map_link_ops',
+        'ipl_sync_export': 'map_link_ops', 'ipl_remove_link': 'map_link_ops',
+        'ipl_sync_from_file': 'map_link_ops',
     }
+    # операции с окном подтверждения (пробный прогон → проблемы / удаление)
+    _CONFIRM_OPS = {'upsert_ide', 'remove_ide', 'upsert_ipl', 'remove_ipl',
+                    'link_unlink', 'ide_sync_export', 'ide_remove_link',
+                    'ipl_sync_export', 'ipl_remove_link'}
 
     def _do_map_op(self, key, label):
         self._reload_dev()
         import importlib
         mod = importlib.import_module('inu_max.ops.' + self._MAP_OPS[key])
-        level, text = getattr(mod, key)()
+        fn = getattr(mod, key)
+        if key in self._CONFIRM_OPS:
+            res = fn(confirm=self._confirm)
+        elif key in ('export_ide', 'export_ipl'):
+            args = self._export_path(key)
+            if args is None:
+                return
+            res = fn(*args)
+        else:
+            res = fn()
         self._after_map_op()
+        if res is None:                                # отменено в подтверждении
+            return
+        level, text = res
         self._show_result(label, level, text, popup=key == 'import_from_img')
+
+    def _do_id_op(self, key, label):
+        """Кнопки ID Manager (ops/id_manager_ops): диалоги From ID... и Extend
+        FLA, подтверждения Create ID / Clear All, ✕ «id_manager_release:<ID>»."""
+        self._reload_dev()
+        from ..ops import id_manager_ops as IM
+        if key.startswith('id_manager_release:'):
+            res = IM.id_manager_release(int(key.split(':', 1)[1]))
+        elif key == 'id_manager_assign_from':
+            args = self._id_dialog(
+                "INU: Assign IDs from...",
+                [("Start ID", 321, 1, 999999, "Starting ID for assignment")],
+                ("Skip occupied IDs", True, "On — skip already-occupied IDs (like "
+                 "auto-assign). Off — strictly sequential from the start ID, even if "
+                 "occupied"))
+            if args is None:
+                return
+            res = IM.id_manager_assign_from(args[0], args[1])
+        elif key == 'id_manager_extend':
+            args = self._id_dialog("INU: Extend IDs",
+                                   [("Count", 1000, 100, 50000, "Number of IDs to add")])
+            if args is None:
+                return
+            res = IM.id_manager_extend(args[0])
+        elif key in ('id_manager_create', 'id_manager_clear'):
+            res = getattr(IM, key)(confirm=self._confirm)
+        else:
+            fn = getattr(IM, key, None)
+            if fn is None:
+                self._stub(label, key)
+                return
+            res = fn()
+        id_mgr = getattr(self, 'id_mgr', None)
+        if id_mgr is not None:
+            id_mgr.refresh()
+        self._sel_key = object()                       # Model ID в окнах — заново
+        if res is None:
+            return
+        level, text = res
+        self._show_result(label, level, text)
+
+    def _do_img_op(self, key, label):
+        """Строка IMG (ops/img_ops): Export — окно с моделями и архивом,
+        Remove / Rebuild — подтверждение, Verify — сразу."""
+        self._reload_dev()
+        from ..ops import img_ops as IO
+        if key == 'export_to_img':
+            items = IO.plan()
+            if not items:
+                self._show_result(label, 'ERROR', "Select mesh objects")
+                return
+            args = self._img_export_dialog(items, IO.archive_choices())
+            if args is None:
+                return
+            res = IO.export_to_img(*args)
+        elif key == 'remove_from_img':
+            res = IO.remove_from_img(confirm=self._confirm)
+        elif key == 'rebuild_img':
+            res = IO.rebuild_img(confirm=self._confirm)
+        else:
+            res = IO.verify_img_link()
+        self._after_map_op()
+        if res is None:
+            return
+        level, text = res
+        self._show_result(label, level, text, popup=key == 'export_to_img')
+
+    def _do_maptab_op(self, key, label):
+        """Вкладка Map (ops/map_tab, ops/map_export)."""
+        self._reload_dev()
+        from ..ops import map_tab as MT
+        if key == 'map_export':
+            from ..ops import map_export as MX
+            args = self._map_export_dialog(MX)
+            if args is None:
+                return
+            res = MX.export_map(args[0], args[1], confirm=self._confirm)
+        else:
+            res = getattr(MT, key)()
+        self._after_map_op()
+        if res is None:
+            return
+        level, text = res
+        self._show_result(label, level, text,
+                          popup=key in ('import_map', 'extract_textures', 'map_export'))
+
+    def _map_export_dialog(self, MX):
+        """Окно Export Map: папка + опции справа (как диалог INU). (папка,
+        opts) или None."""
+        from .file_dialog import INUFileDialog
+        from .. import settings
+        g = settings.get
+        info = MX.plan_info()
+        opts_w = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(opts_w)
+        form.setContentsMargins(4, 4, 4, 4)
+        what = QtWidgets.QLabel("%s: %d placement(s), %d model(s)%s" % (
+            "Selection" if info['scope'] == 'selection' else "Whole scene",
+            info['placements'], info['models'],
+            ("\n%d model(s) without ID — from ID Manager" % info['zero']) if info['zero'] else ""))
+        what.setWordWrap(True)
+        form.addRow(what)
+        base = QtWidgets.QLineEdit(g('map_exp_base', 'district') or 'district')
+        base.setToolTip("Name of the IDE / IPL files (and of the cells)")
+        form.addRow("Base Name", base)
+        cbs = {}
+        for key, text, dflt, tip in (
+                ('dff', "DFF", True, "Models (.dff) and their LOD<model>.dff"),
+                ('col', "COL", True, "Collision (.col)"),
+                ('txd', "TXD", True, "Textures (.txd, merged with an existing file)"),
+                ('ide', "IDE", True, "Object definitions (.ide)"),
+                ('ipl', "IPL", True, "Placements (.ipl): every placement + LOD rows"),
+                ('col_library', "COL Library", False,
+                 "All collision of a cell into one <cell>.col instead of one .col per model"),
+                ('binary', "Binary IPL", False,
+                 "SA: <cell>.ipl (text, LOD rows) + <cell>_stream0.ipl (binary, models) — "
+                 "put the stream file into an IMG"),
+                ('fla', "FLA: real_interior", False,
+                 "Write the 12th realInterior column (Fastman92 Limit Adjuster)")):
+            c = QtWidgets.QCheckBox(text)
+            c.setChecked(bool(g('map_exp_' + key, dflt)))
+            c.setToolTip(tip)
+            form.addRow(c)
+            cbs[key] = c
+        split = QtWidgets.QComboBox()
+        for k, t in MX.SPLITS:
+            split.addItem(t, k)
+        split.setCurrentIndex(max(0, split.findData(g('map_exp_split', 'NONE'))))
+        form.addRow("Split", split)
+        spins = {}
+        for key, text, dflt, lo, hi in (('cell_size', "Cell size (m)", 256, 16, 8192),
+                                        ('max_per_cell', "Max DFFs per cell", 200, 1, 100000),
+                                        ('min_cell_size', "Min cell size (m)", 16, 1, 8192)):
+            s = QtWidgets.QSpinBox()
+            s.setRange(lo, hi)
+            s.setValue(int(g('map_exp_' + key, dflt)))
+            form.addRow(text, s)
+            spins[key] = s
+        dlg = INUFileDialog(self, "INU: Export Map — target folder", mode='folder',
+                            key='map_export', options=opts_w, accept_label="Export")
+        if not dlg.exec() or not dlg.selected_folder():
+            return None
+        opts = dict(base_name=base.text().strip() or 'district', split=split.currentData())
+        for k, c in cbs.items():
+            opts[k] = c.isChecked()
+            settings.set('map_exp_' + k, opts[k])
+        for k, s in spins.items():
+            opts[k] = s.value()
+            settings.set('map_exp_' + k, opts[k])
+        settings.set('map_exp_base', opts['base_name'])
+        settings.set('map_exp_split', opts['split'])
+        return dlg.selected_folder(), opts
+
+    def _img_export_dialog(self, items, choices):
+        """Окно Export to IMG (как диалог INU): архив для моделей без своего,
+        по модели — DFF / LOD / COL / TXD, заглушки LOD / COL (выкл),
+        «Rebuild after export». (items, архив, rebuild) или None."""
+        import os
+        from .file_dialog import INUFileDialog
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("INU: Export to IMG")
+        v = QtWidgets.QVBoxLayout(dlg)
+        need = [it for it in items if not it['own']]
+        combo = QtWidgets.QComboBox()
+        for p in choices:
+            combo.addItem(os.path.basename(p), p)
+            combo.setItemData(combo.count() - 1, p, QtCore.Qt.ToolTipRole)
+        combo.addItem("Browse…", '')
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("IMG archive:"))
+        row.addWidget(combo, 1)
+        v.addLayout(row)
+        hint = QtWidgets.QLabel("For models that are not in an IMG yet (%d). Models with "
+                                "their own IMG are written into it." % len(need))
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        def browse(i):
+            if combo.itemData(i) != '':
+                return
+            d = INUFileDialog(self, "INU: IMG archive", mode='open', key='img_export',
+                              accept_label="Select",
+                              filters=[("GTA IMG (*.img)", ["*.img"]), ("All Files (*.*)", ["*"])])
+            if d.exec() and d.selected_files():
+                p = d.selected_files()[0]
+                combo.insertItem(0, os.path.basename(p), p)
+                combo.setCurrentIndex(0)
+            else:
+                combo.setCurrentIndex(0 if combo.count() > 1 else -1)
+        combo.currentIndexChanged.connect(browse)
+
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        host = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(host)
+        lay.setContentsMargins(4, 4, 4, 4)
+        boxes = []
+        for it in items:
+            where = os.path.basename(it['own']) if it['own'] else "chosen archive"
+            lay.addWidget(QtWidgets.QLabel("<b>%s</b> → %s" % (it['name'], where)))
+            cbs = {}
+
+            def cb(key, text, on, enabled=True, tip=''):
+                c = QtWidgets.QCheckBox(text)
+                c.setChecked(on)
+                c.setEnabled(enabled)
+                c.setToolTip(tip)
+                lay.addWidget(c)
+                cbs[key] = c
+            if it['dff'] is not None:
+                cb('inc_dff', "DFF: %s.dff" % it['name'], it['inc_dff'])
+            if it['lod'] is not None:
+                cb('inc_lod', "LOD: %s.dff" % it['lod_name'], it['inc_lod'])
+            elif it['dff'] is not None:
+                cb('stub_lod', "LOD stub: LOD%s.dff = copy of the model" % it['name'], False,
+                   tip="No LOD mesh in the scene — write a copy of the model as its LOD")
+            if it['dff'] is not None:
+                if it['col_meshes'] or it['col_prims']:
+                    cb('inc_col', "COL: %d mesh(es), %d sphere/box — into its COL library in "
+                       "the archive (or %s.col)" % (len(it['col_meshes']), len(it['col_prims']),
+                                                    it['name']), True)
+                else:
+                    cb('stub_col', "COL stub: empty collision", False,
+                       tip="No collision in the scene — write an empty COL record")
+            txds = sorted({it['txd'], it['lod_txd']} - {''})
+            cb('inc_txd', "TXD: %s (merged with the archive TXD)"
+               % ", ".join(t + ".txd" for t in txds), True)
+            boxes.append((it, cbs))
+        lay.addStretch(1)
+        area.setWidget(host)
+        area.setMinimumSize(420, 260)
+        v.addWidget(area, 1)
+        rb = QtWidgets.QCheckBox("Rebuild after export")
+        rb.setToolTip("After writing, compact the IMG archive (dead space left by replaced "
+                      "entries is removed)")
+        v.addWidget(rb)
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok
+                                        | QtWidgets.QDialogButtonBox.Cancel)
+        bb.button(QtWidgets.QDialogButtonBox.Ok).setText("Export")
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if not dlg.exec():
+            return None
+        for it, cbs in boxes:
+            for key, c in cbs.items():             # остальные — как в плане
+                it[key] = c.isChecked()
+        arch = combo.currentData() or ''
+        if need and not arch:
+            self._show_result("Export to IMG", 'ERROR', "Choose an IMG archive")
+            return None
+        return items, arch, rb.isChecked()
+
+    def _id_dialog(self, title, spins, check=None):
+        """Маленький диалог: числа [(подпись, умолч., мин, макс, подсказка)] +
+        галочка (подпись, умолч., подсказка). None — отмена."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(title)
+        form = QtWidgets.QFormLayout(dlg)
+        boxes = []
+        for lbl, dflt, lo, hi, tip in spins:
+            sb = QtWidgets.QSpinBox()
+            sb.setRange(lo, hi)
+            sb.setValue(dflt)
+            sb.setToolTip(tip)
+            form.addRow(lbl, sb)
+            boxes.append(sb)
+        cb = None
+        if check is not None:
+            cb = QtWidgets.QCheckBox(check[0])
+            cb.setChecked(check[1])
+            cb.setToolTip(check[2])
+            form.addRow(cb)
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok
+                                        | QtWidgets.QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if not dlg.exec():
+            return None
+        out = [b.value() for b in boxes]
+        if cb is not None:
+            out.append(cb.isChecked())
+        return out
+
+    def _confirm(self, title, lines, question):
+        """Окно подтверждения (ConfirmOnProblems INU): строки + вопрос."""
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, "INU Tools: " + title,
+                                    "\n".join(lines) + "\n\n" + question,
+                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, self)
+        box.setDefaultButton(QtWidgets.QMessageBox.No)
+        return box.exec() == QtWidgets.QMessageBox.Yes
+
+    def _export_path(self, key):
+        """Export IDE / IPL: путь нового файла (+ «Binary» для IPL)."""
+        from .file_dialog import INUFileDialog
+        ext = 'ide' if key == 'export_ide' else 'ipl'
+        opts, binary = None, None
+        if ext == 'ipl':
+            opts = QtWidgets.QWidget()
+            ol = QtWidgets.QVBoxLayout(opts)
+            ol.setContentsMargins(4, 4, 4, 4)
+            binary = QtWidgets.QCheckBox("Binary (bnry)")
+            binary.setToolTip("Write the IPL in binary format (inst + cars only)")
+            ol.addWidget(binary)
+            ol.addStretch(1)
+        dlg = INUFileDialog(self, "INU: Export %s (.%s)" % (ext.upper(), ext), mode='save',
+                            key='export_' + ext, accept_label="Export", options=opts,
+                            filename='model.' + ext,
+                            filters=[("GTA %s (*.%s)" % (ext.upper(), ext), ["*." + ext])])
+        if not dlg.exec() or not dlg.save_path():
+            return None
+        path = dlg.save_path()
+        return (path,) if ext == 'ide' else (path, binary.isChecked())
 
     def _show_result(self, label, level, text, popup=False):
         '''Отчёт операции: INFO — строкой в статусе Max (и в Listener),
@@ -949,6 +1320,7 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
                 lst.rebuild()
             imp.refresh()
             exp.refresh()
+            ide_ipl.pages['MAP'].refresh()
         self._sync_from_settings()
         for fn in self._game_handlers:
             fn()
