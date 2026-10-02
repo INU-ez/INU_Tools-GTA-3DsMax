@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/3ds%20Max-2023%E2%80%932026-0696D7?logo=autodesk" alt="3ds Max">
   <img src="https://img.shields.io/badge/Python-3.9%2B%20%C2%B7%20PySide2%20%2F%206-3776AB?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Game-GTA%20SA%20%C2%B7%20VC%20%C2%B7%20III-orange" alt="Games">
-  <img src="https://img.shields.io/badge/Status-UI%20shell%20%C2%B7%20not%20ready-red" alt="Status">
+  <img src="https://img.shields.io/badge/Status-Beta-orange" alt="Status">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -19,16 +19,14 @@
 ---
 
 > [!WARNING]
-> 🚧 **The script is not ready yet.** Right now this is only an **interface shell without the working code**:
-> the windows, rollouts and options are in place, but most buttons do nothing yet (a message box says
-> "not implemented"). Do not use it for real work — use [INU Tools for Blender](https://github.com/INU-ez/INU_Tools-GTA-Blender)
-> instead. See [Status](#-status) for the few early pieces that already run.
+> **Version 0.28.0 — Beta.** Import, export and scene tools are implemented; the port has progressed beyond an interface shell.
+> Automated checks do not replace testing inside 3ds Max and the game. Keep copies of important scenes and resources before processing them.
 
 ## ✨ Highlights
 
 - 🧠 **One core for Blender and Max** — `inu_gta_core` is pure Python (no `bpy`, no `pymxs`): readers/writers for
   DFF, TXD, COL, IFP, IDE, IPL, IMG, `timecyc.dat`, `water.dat`, `map.zon`, `effects.fxp` and the lints built from
-  the engine rules. Any fix in the core lands in both versions.
+  the engine rules. Core updates are synchronized between the repositories.
 - 🎨 **Looks like Kam's, works like INU** — a native **INU Tools** rollout in the Command Panel opens tool windows made
   of collapsible rollouts, grey buttons and green toggles. The options and buttons are the ones from the INU Blender
   panels.
@@ -48,39 +46,41 @@
 | | **GTA Material** | RW shading, colour/alpha, texture name + filtering + addressing, vehicle colour slots, SA vehicle defaults, paintjobs, GTA effects, UV animation, COL surface picker, alpha materials |
 | 🗺️ **Map** | **Map IO** | IDE / IPL / IMG (Import · Export · Map tabs), per-object IDE/IPL properties, ID Manager |
 | | **2DFX** | Create effects from presets, all fields and flags, apply to selection, attach/detach to a model; particle systems from `effects.fxp`, emitter parameters, sprites from `effectsPC.txd` |
-| | **Paths** | `sapath_*` attributes, select Peds / Vehs / All, Pick / Apply / Bulk |
+| | **Paths** | SA Compiled NODES, graph and link editing; `sapath_*` attributes, Pick / Apply / Bulk |
 | | **Zones** | `map.zon` — import as boxes, export with `.bak` and original lines, new zone, parameter editing |
-| | **Water** | Add Water, apply parameters to selection, info on the active water plane |
-| | **X Radar** | X Radar Maker options |
+| | **Water** | Water import/export, Add Water, apply parameters to selection |
+| | **X Radar** | X Radar Maker and radar rendering tools |
 | 🏃 **Animations** | **IFP IO** | IFP into the scene animation library, round-trip check, Handsign status, rig state, To pivot / To root, ped frame hierarchy |
 | 🔎 **Scene** | **Check** | Scene checks, map/file analysis (DFF/COL/TXD scan + IDE/IPL cross-check), TXD texture index |
 
-## 📊 Status
+## 📊 Implemented features
 
-| | Works | Not yet |
-|---|---|---|
-| 🧊 **DFF / TXD** | ✅ DFF import (geometry, frames, textures from `.txd` next to the model), ✅ TXD → PNG | ⏳ DFF export, COL / CST / IDE / IPL import |
-| 🎨 **Material** | ✅ everything in the window | — |
-| 🚗 **Vehicles / peds** | ✅ hierarchy, validation, `_ok`/`_dam` | ⏳ scale, create `_dam`, mirror L↔R |
-| 🗺️ **Map IO** | ✅ file lists, paths, IDE/IPL counters, districts | ⏳ writing IDE/IPL/IMG |
-| ✨ **2DFX** | ✅ effects, presets, particle reading | ⏳ writing `effects.fxp` |
-| 🌊 **World** | ✅ `map.zon` fully, water add/apply, path attributes | ⏳ water import/export, path files, radar render |
-| 🏃 **IFP** | ✅ import into library, round-trip | ⏳ keys, IK, camera, weights |
-| 🔎 **Check** | ✅ file analysis, texture index | ⏳ scene operations |
+| Area | Features |
+|---|---|
+| **DFF / TXD / COL** | Model import and export, TXD building, texture extraction, collisions and material properties |
+| **Maps and archives** | IDE/IPL/IMG import and export, multi-mesh models, LOD links, shared TXDs, separate LOD IMG archives and COL library updates |
+| **Compiled NODES (SA)** | Editable graphs, stable vertex IDs, point creation and deletion, link rebuilding, merging with existing maps, cross-area remapping across 64 areas and validation before writing |
+| **ID Manager** | ID assignment, presets, conflict detection and protected game IDs |
+| **Vehicles and peds** | Frame hierarchy, `_ok` / `_dam` pairs, scaling, mirroring, rig and weight tools |
+| **Animation** | IFP, animation keys, IK and camera tools; SA UV animation with warnings for III/VC limitations |
+| **World and effects** | Water, zones, paths, radar tools, 2DFX and `effects.fxp` writing |
+| **Scene and lighting** | Scene checks and mesh operations, Prelight / Bake over, COL properties and separate pipeline settings |
+| **Diagnostics** | File analysis, resource checks, extraction error recovery, logs and Extract/Import profiling |
+
+**Validation:** 159 automated tests passed in the latest validation run. These cover the core, file operations and adapters through test harnesses. Native Qt/pymxs workflows in Max 2023–2026 and in-game results still need validation.
+
+The port excludes Blender-specific Texture Bake, geometry nodes and live previews. Some COL, LOD and adapter improvements remain; see the [transfer log](docs/MAX_TODO_2026-09-28.md) for details and limitations.
 
 ## 📥 Installation
 
-1. Clone or download the repository, e.g. to `F:\GitHub\INU_Tools-GTA-sa-3Ds Max`.
-2. Open `inu_launcher.ms` and set `INU_ROOT` to that folder if it is different.
-3. In 3ds Max: **Scripting → Run Script…** → `inu_launcher.ms`. The **INU Tools** rollout appears in the Command
-   Panel (Utilities tab).
-4. To have it on every start, copy `inu_launcher.ms` into `…\3ds Max 20xx\scripts\Startup\`.
+1. Download and extract the repository, or clone it into a dedicated folder.
+2. In 3ds Max, open **Scripting → Run Script…** and select `inu_launcher.ms` from that folder. Its location is detected automatically.
+3. In the **INU Tools** rollout on the **Utilities** tab, click **Install INU** (or **Update INU** for an existing installation).
+4. Wait for the bundle and any missing NumPy dependency to install, then restart Max. The installed bundle registers the INU Tools menu, launcher and matching native plugin.
 
-**Dev mode:** **Scripting → Run Python Script…** → `run_inu.py` opens the launcher window directly and reloads all
-`inu_max` / `inu_gta_core` modules.
+To update, replace the source folder's files and click **Update INU** again. If you use multiple Max releases, run installation from each release that needs NumPy. You do not need to copy the launcher into Startup manually.
 
-> 🔒 Nothing is written to game files without your action. TXD import extracts PNGs into `<name>_textures\` next to
-> the `.txd`; `map.zon` export keeps a `.bak` copy.
+**Development mode:** run `run_inu.py` through Python in Max to open the launcher window and reload `inu_max` / `inu_gta_core` modules.
 
 ## 🧪 Compatibility
 
@@ -122,7 +122,9 @@ inu_gta_core/       shared core: formats + engine-rule lints, pure Python
 inu_max/            3ds Max layer
   ui/               Qt windows (panel.py = window router, style.py / widgets.py = Kam's look)
   adapter/          Max scene ↔ core structures (mesh, material, texture, anim, fx, world, zon)
-  ops/              operations (import DFF/TXD, IFP, checks, frames, 2DFX)
+  ops/              model/map IO, NODES, scene, vehicle, animation and world tools
+plugins/<year>/    native INU_Import.dli builds for Max 2023–2026
+dev/tests/         automated regression tests and Max runtime smoke scripts
 ```
 
 </details>
