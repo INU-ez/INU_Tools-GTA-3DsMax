@@ -341,7 +341,7 @@ def _has_alpha(path):
     """Значимый альфа-канал у файла текстуры (не все пиксели 255)."""
     if not path or not os.path.isfile(path):
         return False
-    from PySide6 import QtGui
+    from ..qt import QtGui
     img = QtGui.QImage(path)
     if img.isNull() or not img.hasAlphaChannel():
         return False

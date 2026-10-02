@@ -5,7 +5,7 @@
 **🧰 Набор инструментов для моддинга GTA III / VC / SA в 3ds Max. То же ядро правил движка, что и в Blender-аддоне INU, интерфейс в стиле Kam's.**
 
 <p>
-  <img src="https://img.shields.io/badge/3ds%20Max-2023%2B-0696D7?logo=autodesk" alt="3ds Max">
+  <img src="https://img.shields.io/badge/3ds%20Max-2023%E2%80%932026-0696D7?logo=autodesk" alt="3ds Max">
   <img src="https://img.shields.io/badge/Python-3.9%2B%20%C2%B7%20PySide2%20%2F%206-3776AB?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Game-GTA%20SA%20%C2%B7%20VC%20%C2%B7%20III-orange" alt="Games">
   <img src="https://img.shields.io/badge/Status-UI%20shell%20%C2%B7%20not%20ready-red" alt="Status">
@@ -86,10 +86,23 @@
 
 | | |
 |---|---|
-| 🖥️ **3ds Max** | минимум **2023** (2023–2024: Python 3.9–3.10 + PySide2; 2025+: PySide6); разработка на **2026** |
+| 🖥️ **3ds Max** | **2023–2026** (2023–2024: PySide2 / Qt5; 2025–2026: PySide6 / Qt6); нативные проверки ещё не завершены |
 | 🎮 **Игра** | GTA San Andreas (основная цель), Vice City и III |
 | 💻 **ОС** | Windows x64 |
-| 📦 **Зависимости** | только то, что идёт с Max |
+| 📦 **Зависимости** | Qt из Max и NumPy (лаунчер устанавливает его при отсутствии) |
+
+Установщик регистрирует общий пакет для Max 2023–2026. NumPy хранится отдельно
+для каждой версии Python. Если в другом Max NumPy отсутствует, запустите
+**Install / Update INU** из его лаунчера.
+
+Нативному `.dli` нужен отдельный SDK соответствующего года. В репозитории есть
+отдельные бинарники 2023, 2024, 2025 и 2026 в `plugins/<год>/`. Их версии SDK
+и архитектура x64 проверены; нативная проверка внутри Max ещё не завершена. Без них доступны импорт из
+окна INU и перетаскивание на окно. Перетаскивание во вьюпорт и операции,
+требующие плагина (например, Bake with shadows), недоступны.
+
+Проверки совместимости выполнены на harness; запуск инструментов внутри
+каждой версии 3ds Max остаётся отдельной проверкой.
 
 <details>
 <summary>📁 Структура репозитория</summary>

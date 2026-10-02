@@ -36,7 +36,7 @@ def _hdr(kind, size, lib_id):
 
 def load_rgba(path):
     """(h, w, 4) uint8, строки сверху вниз, или None (файл не читается)."""
-    from PySide6 import QtGui
+    from ..qt import QtGui
     img = QtGui.QImage(path)
     if img.isNull():
         return None

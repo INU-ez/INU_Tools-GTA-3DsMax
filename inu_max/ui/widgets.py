@@ -1,7 +1,7 @@
 # INU Tools (Max) — общие виджеты окон: роллауты Kam's, своя прокрутка,
 # конструкторы контролов, привязанных к settings.
 
-from PySide6 import QtWidgets, QtCore, QtGui
+from ..qt import QtWidgets, QtCore, QtGui, mouse_position
 
 from .style import C, BTN_H, SB_W, SB_GAP, icon, qss
 
@@ -225,7 +225,7 @@ class ScrollStrip(QtWidgets.QWidget):
         if g is None or e.button() != QtCore.Qt.LeftButton:
             return
         y, hh = g
-        py = e.position().y()
+        py = mouse_position(e).y()
         if y <= py <= y + hh:
             self._drag = (py, self._view.offset())
         else:
@@ -244,7 +244,7 @@ class ScrollStrip(QtWidgets.QWidget):
         span = self.height() - g[1]
         if span <= 0:
             return
-        dy = e.position().y() - self._drag[0]
+        dy = mouse_position(e).y() - self._drag[0]
         self._view.scroll_to(self._drag[1]
                              + dy * self._view.max_offset() / float(span))
 

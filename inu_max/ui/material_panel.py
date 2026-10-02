@@ -11,7 +11,7 @@
 
 import os
 
-from PySide6 import QtWidgets, QtCore, QtGui
+from ..qt import QtWidgets, QtCore, QtGui
 
 from .style import BTN_H, icon, SEVERITY_COLOR
 from .widgets import (BuildMixin, FusedBlock, Expander, IconLabel, icon_btn,

@@ -10,7 +10,7 @@
 
 import os
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .style import BTN_H, icon, SEVERITY_COLOR
 from .widgets import (BuildMixin, FusedBlock, IconLabel, NumEdit, IntEdit,

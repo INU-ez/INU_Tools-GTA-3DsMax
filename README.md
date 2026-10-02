@@ -5,7 +5,7 @@
 **🧰 GTA SA / VC / III modding toolkit for 3ds Max. Same engine-rule core as the INU Blender addon, with a Kam's-style interface.**
 
 <p>
-  <img src="https://img.shields.io/badge/3ds%20Max-2023%2B-0696D7?logo=autodesk" alt="3ds Max">
+  <img src="https://img.shields.io/badge/3ds%20Max-2023%E2%80%932026-0696D7?logo=autodesk" alt="3ds Max">
   <img src="https://img.shields.io/badge/Python-3.9%2B%20%C2%B7%20PySide2%20%2F%206-3776AB?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Game-GTA%20SA%20%C2%B7%20VC%20%C2%B7%20III-orange" alt="Games">
   <img src="https://img.shields.io/badge/Status-UI%20shell%20%C2%B7%20not%20ready-red" alt="Status">
@@ -86,10 +86,26 @@
 
 | | |
 |---|---|
-| 🖥️ **3ds Max** | **2023** minimum (2023–2024: Python 3.9–3.10 + PySide2; 2025+: PySide6); developed on **2026** |
+| 🖥️ **3ds Max** | **2023–2026** (2023–2024: PySide2 / Qt5; 2025–2026: PySide6 / Qt6); native runtime verification pending |
 | 🎮 **Game** | GTA San Andreas (main target), Vice City and III |
 | 💻 **OS** | Windows x64 |
-| 📦 **Dependencies** | none besides what ships with Max |
+| 📦 **Dependencies** | Max-provided Qt and NumPy (installed by the launcher if missing) |
+
+The installer registers one bundle for Max 2023–2026. NumPy wheels are isolated
+by Python version, so installing from another Max release does not overwrite them.
+Run **Install / Update INU** in each Max whose Python needs NumPy.
+
+Native `.dli` plugins require a matching SDK build for each Max year. The repository includes separate
+2023, 2024, 2025 and 2026 binaries in `plugins/<year>/`. Their SDK versions and
+x64 architecture have been checked; in-host runtime validation remains pending. Without
+one, use the INU import UI or drop files on its window; viewport drag-and-drop and
+plugin-dependent operations such as Bake with shadows are unavailable.
+
+Developer build: `./max_plugin/build.ps1 -Year 2023,2024,2025,2026`, with matching
+Autodesk SDKs and v142 (2023/2024) or v143 (2025/2026). `-SdkPath` selects an SDK
+for a single target. For extracted SDK/compiler packages, use
+`build_portable.ps1 -Year <year> -SdkPath <maxsdk> -ToolsPath <MSVC directory>`. Cross-version compatibility checks use harnesses; they do
+not replace running the tools in each installed Max release.
 
 <details>
 <summary>📁 Repository layout</summary>

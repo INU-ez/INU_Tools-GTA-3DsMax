@@ -2,7 +2,7 @@
 # (numpy качается pip'ом — Max при этом отзывчив), итог и просьба перезапустить
 # Max, подтверждение удаления.
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .style import qss
 

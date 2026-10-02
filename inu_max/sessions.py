@@ -10,7 +10,7 @@ def stop(name):
 
 
 def start(name, callback, interval=500):
-    from PySide6 import QtCore, QtWidgets
+    from .qt import QtCore, QtWidgets
     stop(name)
     timer = QtCore.QTimer(QtWidgets.QApplication.instance())
     def tick():

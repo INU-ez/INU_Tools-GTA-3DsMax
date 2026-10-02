@@ -25,6 +25,8 @@ from .version import VERSION
 
 BUNDLE_NAME = 'INU_Tools.bundle'
 PLUGIN_NAME = 'INU_Import.dli'
+SUPPORTED_YEARS = (2023, 2024, 2025, 2026)
+INSTALL_SCHEMA = 2
 # что из папки INU нужно в Max (копия): код и лаунчер
 CODE_ITEMS = ('inu_boot.py', 'inu_launcher.ms', 'run_inu.py', 'inu_max', 'inu_gta_core')
 MAIN_MENU_BAR = 'b4779ebb-a6f0-4815-9777-57c01c0b584c'   # главное меню Max 2025+
@@ -64,9 +66,10 @@ def code_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def libs_dir():
+def libs_dir(version=None):
     """Папка пакета для numpy (добавляется в sys.path при запуске Max)."""
-    return os.path.join(bundle_dir(), 'Contents', 'python_libs')
+    version = version or sys.version_info[:2]
+    return os.path.join(bundle_dir(), 'Contents', 'python_libs', 'py%d%d' % tuple(version[:2]))
 
 
 def _rt():
@@ -142,10 +145,10 @@ def status():
     if not installed:
         return dict(state='NOT_INSTALLED', text='Not installed', button='Install INU')
     root = code_root()
-    stale = man.get('version') != VERSION or man.get('year') != max_year()
+    stale = man.get('version') != VERSION or man.get('schema') != INSTALL_SCHEMA
     if man.get('mode') == 'link':
         stale = stale or os.path.normcase(man.get('root', '')) != os.path.normcase(root)
-    if not man.get('plugin') and plugin_source(root, max_year()):
+    if str(max_year()) not in man.get('plugins', {}) and plugin_source(root, max_year()):
         stale = True
     if stale:
         return dict(state='UPDATE', button='Update INU',
@@ -214,10 +217,14 @@ def _startup_ms():
     )
     if root != undefined and doesFileExist (pathConfig.appendPath root "inu_boot.py") then (
         local libs = pathConfig.appendPath contents "python_libs"
-        python.Execute ("import sys\nfor p in (r'" + libs + "', r'" + root + "'):\n    if p not in sys.path: sys.path.insert(0, p)")
+        python.Execute ("import os, sys\np_lib = os.path.join(r'" + libs + "', 'py%d%d' % sys.version_info[:2])\nfor p in (p_lib, r'" + root + "'):\n    if p not in sys.path: sys.path.insert(0, p)")
         global INU_LAUNCHER_NO_OPEN = true
         fileIn (pathConfig.appendPath root "inu_launcher.ms")
         INU_LAUNCHER_NO_OPEN = false
+        if (maxVersion())[1] < 27000 do (
+            fileIn (pathConfig.appendPath contents "scripts\\INU_Macros.mcr")
+            fileIn (pathConfig.appendPath contents "scripts\\INU_MenuLegacy.ms")
+        )
     ) else (
         format "[INU Tools] INU folder not found (%): reinstall INU from its launcher\n" root
     )
@@ -254,18 +261,33 @@ def _menu_mnx():
     return "\n".join(lines) + "\n"
 
 
-def _package_xml(year, with_plugin):
-    def comp(kind, module):
+def _legacy_menu_ms():
+    lines = ['-- INU Tools menu for Max 2023/2024 (Qt5, legacy menu manager).',
+             '(', '    if menuMan.findMenu "INU Tools" == undefined do (',
+             '        local inuMenu = menuMan.createMenu "INU Tools"',
+             '        menuMan.registerMenu inuMenu 0']
+    for i, (macro, _label, _mode) in enumerate(WINDOWS, 1):
+        lines.append('        inuMenu.addItem (menuMan.createActionItem "%s" "INU_Tools") %d' % (macro, i))
+    lines += ['        local inuBar = menuMan.getMainMenuBar()',
+              '        inuBar.addItem (menuMan.createSubMenuItem "INU Tools" inuMenu) (inuBar.numItems() + 1)',
+              '        menuMan.updateMenuBar()', '    )', ')']
+    return '\n'.join(lines) + '\n'
+
+
+def _package_xml(year, with_plugin, plugin_years=None):
+    def comp(kind, module, minimum=2023, maximum=2026):
         return ('  <Components Description="%s">\n'
                 '    <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="%d" SeriesMax="%d" />\n'
                 '    <ComponentEntry AppName="INU Tools" Version="%s" ModuleName="%s" />\n'
-                '  </Components>\n' % (kind, year, year, VERSION, module))
+                '  </Components>\n' % (kind, minimum, maximum, VERSION, module))
     parts = ''
-    if with_plugin:
-        parts += comp('plugins parts', './Contents/%d/%s' % (year, PLUGIN_NAME))
+    if plugin_years is None:
+        plugin_years = [year] if with_plugin else []
+    for target in plugin_years:
+        parts += comp('plugins parts', './Contents/%d/%s' % (target, PLUGIN_NAME), target, target)
     parts += comp('post-start-up scripts parts', './Contents/scripts/INU_Startup.ms')
     parts += comp('macroscripts parts', './Contents/scripts/INU_Macros.mcr')
-    parts += comp('menu parts', './Contents/cui/INU_Menu.mnx')
+    parts += comp('menu parts', './Contents/cui/INU_Menu.mnx', 2025, 2026)
     return ('<?xml version="1.0" encoding="utf-8"?>\n'
             '<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="3ds Max" ProductType="Application"\n'
             '    Name="INU Tools" Description="GTA SA / VC / III tools for 3ds Max"\n'
@@ -274,7 +296,7 @@ def _package_xml(year, with_plugin):
             '    UpgradeCode="{9E4A1C27-5B3F-4D82-A6C0-8F1D3E5B7A24}">\n'
             '  <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="%d" SeriesMax="%d" />\n'
             '  <CompanyDetails Name="INU" />\n%s'
-            '</ApplicationPackage>\n' % (VERSION, year, year, parts))
+            '</ApplicationPackage>\n' % (VERSION, 2023, 2026, parts))
 
 
 def install_numpy(log=print, wait=None):
@@ -307,6 +329,8 @@ def install(mode=None, year=None, with_numpy=True, log=print, wait=None):
     для папки с .git, иначе copy). Возвращает список строк отчёта."""
     root = code_root()
     year = year or max_year()
+    if year not in SUPPORTED_YEARS:
+        raise ValueError('INU supports 3ds Max 2023–2026; detected %s' % year)
     mode = mode or ('link' if is_dev(root) else 'copy')
     b = bundle_dir()
     contents = os.path.join(b, 'Contents')
@@ -319,27 +343,33 @@ def install(mode=None, year=None, with_numpy=True, log=print, wait=None):
     else:
         inu_root = root
         report.append("INU code linked: %s" % root)
-    plugin = plugin_source(root, year)
-    if plugin:
-        _copy_plugin(plugin, os.path.join(contents, str(year)))
-        _write(os.path.join(contents, str(year), 'inu_root.txt'), inu_root + '\n')
-        report.append("Drag & drop plugin for 3ds Max %d" % year)
-    else:
+    plugins = {}
+    for target in SUPPORTED_YEARS:
+        plugin = plugin_source(root, target)
+        if plugin:
+            _copy_plugin(plugin, os.path.join(contents, str(target)))
+            _write(os.path.join(contents, str(target), 'inu_root.txt'), inu_root + '\n')
+            plugins[str(target)] = True
+            report.append("Native plugin for 3ds Max %d" % target)
+    if str(year) not in plugins:
         report.append("No drag & drop plugin for 3ds Max %d (drop files on the "
                       "INU window instead)" % year)
     _write(os.path.join(contents, 'inu_root.txt'), inu_root + '\n')
     _write(os.path.join(contents, 'scripts', 'INU_Startup.ms'), _startup_ms())
     _write(os.path.join(contents, 'scripts', 'INU_Macros.mcr'), _macros_mcr())
+    _write(os.path.join(contents, 'scripts', 'INU_MenuLegacy.ms'), _legacy_menu_ms())
     _write(os.path.join(contents, 'cui', 'INU_Menu.mnx'), _menu_mnx())
     if with_numpy and not numpy_ok():
         ok, msg = install_numpy(log, wait)
         report.append("numpy installed (%s)" % msg if ok else
                       "numpy NOT installed: %s — DFF/TXD need numpy" % msg)
     _write(os.path.join(contents, 'install.json'), json.dumps(dict(
-        version=VERSION, mode=mode, root=root, year=year, plugin=bool(plugin),
+        version=VERSION, schema=INSTALL_SCHEMA, mode=mode, root=root, year=year,
+        plugin=str(year) in plugins, plugins=plugins,
         time=time.strftime('%Y-%m-%d %H:%M:%S')), indent=1))
     # PackageContents — последним: без него Max пакет не грузит
-    _write(os.path.join(b, 'PackageContents.xml'), _package_xml(year, bool(plugin)))
+    _write(os.path.join(b, 'PackageContents.xml'), _package_xml(year, str(year) in plugins,
+                                                           [int(y) for y in plugins]))
     for line in report:
         log("[INU setup] " + line)
     return report

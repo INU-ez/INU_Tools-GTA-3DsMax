@@ -3,7 +3,7 @@
 # settings. Используют окно DFF IO (сброс на окно) и C++ импортёр (сброс во
 # вьюпорт, File → Import).
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .. import settings
 from .style import qss
@@ -17,7 +17,7 @@ def _get(key, default):
 def _at_cursor(dlg):
     """Окно у курсора (как всплывающий диалог Blender при перетаскивании),
     не выходя за край экрана."""
-    from PySide6 import QtGui
+    from ..qt import QtGui
     dlg.adjustSize()
     cur = QtGui.QCursor.pos()
     screen = QtGui.QGuiApplication.screenAt(cur) or QtGui.QGuiApplication.primaryScreen()

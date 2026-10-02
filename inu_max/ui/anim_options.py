@@ -5,7 +5,7 @@
 
 import os
 
-from PySide6 import QtWidgets
+from ..qt import QtWidgets
 
 from .style import C
 from .widgets import BuildMixin, Rollout, FusedBlock, IconLabel, PropsDialog

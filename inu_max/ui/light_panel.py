@@ -10,7 +10,7 @@
 # PreLight COL (часть 3), LightMap UV2 (часть 4). Вкладки Itera нет —
 # Itera Tools 3 работает только в Blender.
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .style import BTN_H, icon
 from .widgets import (BuildMixin, FusedBlock, Expander, NumEdit, IntEdit, ColorSwatch,

@@ -8,7 +8,7 @@
 import os
 import tempfile
 
-from PySide6 import QtCore, QtGui
+from ..qt import QtCore, QtGui
 
 C = dict(
     win="#444444",        # фон окна (между роллаутами)

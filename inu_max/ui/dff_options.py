@@ -5,7 +5,7 @@
 # FlagsBox и pipeline_buttons — общие для окна DFF IO и панели экспорта.
 # Оформление — роллауты и группы Kam's (widgets.py).
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .style import C
 from .widgets import BuildMixin, Rollout, ElideLabel, FusedBlock

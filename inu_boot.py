@@ -22,7 +22,8 @@ def _ensure_paths():
     if root not in sys.path:
         sys.path.insert(0, root)
     libs = os.path.join(os.environ.get('APPDATA') or '', 'Autodesk', 'ApplicationPlugins',
-                        'INU_Tools.bundle', 'Contents', 'python_libs')
+                        'INU_Tools.bundle', 'Contents', 'python_libs',
+                        'py%d%d' % sys.version_info[:2])
     if os.path.isdir(libs) and libs not in sys.path:
         sys.path.append(libs)
 

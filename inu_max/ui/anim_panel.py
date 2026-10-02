@@ -6,7 +6,7 @@
 # проверка round-trip, статус Handsign, состояние rig'а анимированного
 # объекта (подсказки, структура, настройки pivot'а в user properties),
 
-from PySide6 import QtWidgets, QtCore, QtGui
+from ..qt import QtWidgets, QtCore, QtGui
 
 from .style import C, BTN_H, icon, SEVERITY_COLOR
 from .widgets import (BuildMixin, FusedBlock, Expander, IconLabel, icon_btn)

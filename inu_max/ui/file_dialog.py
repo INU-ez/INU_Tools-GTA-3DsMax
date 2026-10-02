@@ -16,7 +16,7 @@ import json
 import os
 import tempfile
 
-from PySide6 import QtWidgets, QtCore, QtGui
+from ..qt import QtWidgets, QtCore, QtGui
 
 from .style import qss, BTN_H, SB_W, SB_GAP
 from .widgets import scrolled, content_min_width

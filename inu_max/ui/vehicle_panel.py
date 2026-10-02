@@ -5,7 +5,7 @@
 # родителя / F2 — переименовать), Validate Vehicle/Ped, проверка пар и показ
 # _ok/_dam. Заглушки: масштаб, создание _dam, зеркало L↔R.
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .style import C, BTN_H, icon
 from .widgets import BuildMixin, FusedBlock, ElideLabel

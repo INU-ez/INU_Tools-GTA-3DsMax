@@ -1,0 +1,33 @@
+{
+  "script_version": "0.28.0",
+  "targets": {
+    "2023": {
+      "file": "2023/INU_Import.dli",
+      "sha256": "0af4fa6e45e8c24b058cca8fb7864c5d55ada313c0370b1a6a42fe8a44ace281",
+      "sdk_release": 25000,
+      "toolset": "v142",
+      "runtime_tested": false
+    },
+    "2024": {
+      "file": "2024/INU_Import.dli",
+      "sha256": "1319d01fa4aaa3f58c5b5df84d0d7b30b5d6ed77dd842b039228e1486054d4fb",
+      "sdk_release": 26000,
+      "toolset": "v142",
+      "runtime_tested": false
+    },
+    "2025": {
+      "file": "2025/INU_Import.dli",
+      "sha256": "9a18539d20724d80716210bb857154bf856080d0a4edf1adde5f8a4630b24108",
+      "sdk_release": 27000,
+      "toolset": "v143",
+      "runtime_tested": false
+    },
+    "2026": {
+      "file": "2026/INU_Import.dli",
+      "sha256": "c02cd82db634961e8469c5db9c9d0eed25e960396352f839207cf52ca999a577",
+      "sdk_release": 28000,
+      "toolset": "v143",
+      "runtime_tested": false
+    }
+  }
+}

@@ -8,7 +8,7 @@
 # запись в effects.fxp (новый / удалить / сохранить / кривая). Живое превью
 # эффектов и симуляция частиц исключены из порта.
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 from .style import BTN_H, icon, SEVERITY_COLOR
 from .widgets import (BuildMixin, FusedBlock, Expander, IconLabel, icon_btn,

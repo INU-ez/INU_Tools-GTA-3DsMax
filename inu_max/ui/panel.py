@@ -13,7 +13,7 @@
 
 import os
 
-from PySide6 import QtWidgets, QtCore
+from ..qt import QtWidgets, QtCore
 
 try:
     import qtmax           # родитель = главное окно Max (Max 2025+)
@@ -100,8 +100,8 @@ def _core_status():
         return False, (
             "numpy is missing in 3ds Max Python: DFF/TXD unavailable.\n"
             "Without numpy: " + (" · ".join(avail) or "—") + "\n"
-            "Install (admin PowerShell):\n"
-            '"…\\3ds Max 2026\\Python\\python.exe" -m pip install "numpy<2"')
+            "Open the INU launcher and click Install / Update INU to install numpy "
+            "for this Max Python version.")
 
     if dff_ok and txd_ok and len(avail) >= 5:
         return True, "Core: " + " · ".join(avail)
