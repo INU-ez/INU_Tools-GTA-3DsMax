@@ -161,7 +161,7 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
          'water': self._sections_water, 'zones': self._sections_zones,
          'paths': self._sections_paths, 'radar': self._sections_radar,
          'light': self._sections_light}.get(
-            mode, self._sections_stub)(root)
+            mode, self._unknown_section)(root)
 
         root.addStretch(1)
         root.addWidget(self._footer(mode != 'launcher'))
@@ -265,10 +265,10 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         except Exception as e:                         # noqa: BLE001
             self._setup_lb.setText("Setup: %s" % e)
 
-    # ---- окно-заглушка (раздел ещё не реализован) ------------------------
-    def _sections_stub(self, root):
-        s = Rollout("In progress", opened=True)
-        s.body.addWidget(self._hint("Window layout only, logic comes next."))
+    # ---- unknown window identifier ------------------------
+    def _unknown_section(self, root):
+        s = Rollout("Unknown tool", opened=True)
+        s.body.addWidget(self._hint("This tool has no registered window."))
         root.addWidget(s)
 
     # ---- ОКНО «DFF IO»: как панель «Экспорт / Импорт» INU ----------------
@@ -360,6 +360,7 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
 
     def _on_pipeline(self):
         self.flags.refresh()
+        self._poll_selection(force=True)
 
     def _dff_selection(self, snap):
         self._apply_selection(snap['info'])
@@ -494,7 +495,7 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         from inu_max.ops.inu_import import import_files
         report = import_files(paths, auto_txd=bool(self._get('auto_txd', True)))
         diag.mark("import done")
-        self._sel_key = object()          # после импорта обновить сводку
+        self._sync_from_settings()        # pipeline and object flags after import
         # отчёт — НЕмодально: модальный цикл Qt поверх Max мешал Max догружать
         # текстуры вьюпорта (зависание на десятки секунд после импорта)
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information,
@@ -612,6 +613,12 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         if not ok:
             return
         folder, name = dlg.target()
+        if self._get('export_to_img', False):
+            if self._get('exp_single_dff', False):
+                self._show_result('Export', 'ERROR', 'Single DFF cannot be combined with All → IMG')
+                return
+            self._do_img_op('export_to_img', 'Export All to IMG', use_export_options=True)
+            return
         self._reload_dev()
         from inu_max.ops import dff_export
         done, errors, warnings = dff_export.export(folder, (name or '').strip())
@@ -887,9 +894,9 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         'import_txd': ('inu_max.ops.import_txd', 'import_txd_interactive'),
     }
 
-    def _dispatch(self, label, key):
+    def _dispatch(self, label, key, **options):
         """Роутинг кнопок: open:<mode> — открыть окно; реализованные — в
-        операции; остальные — заглушка."""
+        операции; unknown keys report a registration error."""
         if key.startswith("open:"):
             open_window(key.split(":", 1)[1])
             return
@@ -924,16 +931,81 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
             self._refresh_setup()
             return
         self._reload_dev()
+        from inu_max.ops import vehicle_tools, scene_tools, water_tools, anim_tools, camera_tools, radar_tools, path_tools, mesh_tools, node_tools, ipl_tools, rig_tools, weight_tools
+        operations = dict(vehicle_tools.OPERATIONS, **scene_tools.OPERATIONS,
+                          **water_tools.OPERATIONS, **anim_tools.OPERATIONS,
+                          **camera_tools.OPERATIONS, **radar_tools.OPERATIONS,
+                          **path_tools.OPERATIONS, **mesh_tools.OPERATIONS, **node_tools.OPERATIONS,
+                          **ipl_tools.OPERATIONS, **rig_tools.OPERATIONS, **weight_tools.OPERATIONS)
+        if key in ('import_ipl_sections', 'export_ipl_sections') and 'path' not in options:
+            from .file_dialog import INUFileDialog
+            exporting = key.startswith('export')
+            dialog = INUFileDialog(self, label, mode='save' if exporting else 'open',
+                key='ipl_sections', filename='sections.ipl',
+                filters=[('GTA IPL (*.ipl)', ['*.ipl'])], accept_label='Export' if exporting else 'Import')
+            if not dialog.exec():
+                return
+            options['path'] = dialog.save_path() if exporting else dialog.selected_files()[0]
+        if key == 'batch_set_distance' and 'values' not in options:
+            from ..adapter import selection
+            active = selection.active_node()
+            if active is None:
+                self._show_result(label, 'WARNING', 'Select models first')
+                return
+            dialog = QtWidgets.QDialog(self)
+            dialog.setWindowTitle('INU: Batch IDE properties')
+            form = QtWidgets.QFormLayout(dialog)
+            fields = {}
+            for caption, field, default in (
+                ('Draw distance', 'draw_distance', 300.0), ('LOD distance', 'lod_draw_distance', 999.0),
+                ('Starting Model ID', 'model_id', 0), ('Interior', 'interior_id', 0),
+                ('IDE flags', 'ide_flags', 0), ('TXD', 'txd_name', ''), ('COL Library', 'col_library', '')):
+                enabled = QtWidgets.QCheckBox(caption)
+                enabled.setChecked(field in ('draw_distance', 'lod_draw_distance'))
+                value = selection.get_field(active, field, default)
+                if isinstance(default, str):
+                    widget = QtWidgets.QLineEdit(value)
+                    getter = widget.text
+                elif isinstance(default, float):
+                    widget = QtWidgets.QDoubleSpinBox()
+                    widget.setRange(0, 100000)
+                    widget.setValue(value)
+                    getter = widget.value
+                else:
+                    widget = QtWidgets.QSpinBox()
+                    widget.setRange(0, 2**31-1)
+                    widget.setValue(value)
+                    getter = widget.value
+                form.addRow(enabled, widget)
+                fields[field] = enabled, getter
+            buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            form.addRow(buttons)
+            if not dialog.exec():
+                return
+            options['values'] = {key: getter() for key, (enabled, getter) in fields.items() if enabled.isChecked()}
+        if key == 'validate_run':
+            self._run(lambda: self.pre_check.set_issues(scene_tools.validate_scene()), label)
+            return
+        if key in operations:
+            def go():
+                level, text = operations[key](**options)
+                self._show_result(label, level, text)
+                self._poll_selection(force=True)
+            self._run(go, label)
+            return
         op = self._OPS.get(key)
         if op is not None:
             mod, fn = op
             self._run(lambda: getattr(__import__(mod, fromlist=[fn]), fn)(), label)
             return
-        self._stub(label, key)
+        self._unknown_operation(label, key)
 
     # операции окна Map IO: ключ → модуль inu_max.ops; функция возвращает
     # (уровень, текст отчёта)
     _MAP_OPS = {
+        'auto_find_lod': 'map_link_ops',
         'scan_img_for_ipl': 'map_import',
         'scan_ide_for_ipl': 'map_import',
         'import_from_img': 'map_import',
@@ -978,7 +1050,7 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         self._reload_dev()
         from ..ops import id_manager_ops as IM
         if key.startswith('id_manager_release:'):
-            res = IM.id_manager_release(int(key.split(':', 1)[1]))
+            res = IM.id_manager_release(int(key.split(':', 1)[1]), confirm=self._confirm)
         elif key == 'id_manager_assign_from':
             args = self._id_dialog(
                 "INU: Assign IDs from...",
@@ -1000,7 +1072,7 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         else:
             fn = getattr(IM, key, None)
             if fn is None:
-                self._stub(label, key)
+                self._unknown_operation(label, key)
                 return
             res = fn()
         id_mgr = getattr(self, 'id_mgr', None)
@@ -1012,13 +1084,18 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         level, text = res
         self._show_result(label, level, text)
 
-    def _do_img_op(self, key, label):
+    def _do_img_op(self, key, label, use_export_options=False):
         """Строка IMG (ops/img_ops): Export — окно с моделями и архивом,
         Remove / Rebuild — подтверждение, Verify — сразу."""
         self._reload_dev()
         from ..ops import img_ops as IO
         if key == 'export_to_img':
             items = IO.plan()
+            if use_export_options:
+                for item in items:
+                    for option, setting in (('inc_dff', 'exp_dff'), ('inc_lod', 'exp_lod'),
+                                            ('inc_col', 'exp_col'), ('inc_txd', 'exp_txd')):
+                        item[option] = bool(item[option] and self._get(setting, True))
             if not items:
                 self._show_result(label, 'ERROR', "Select mesh objects")
                 return
@@ -1026,6 +1103,11 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
             if args is None:
                 return
             res = IO.export_to_img(*args)
+            if use_export_options and res[0] != 'ERROR' and self._get('exp_ide_ipl', False):
+                from ..ops import map_link_ops
+                reports = [map_link_ops.upsert_ide(), map_link_ops.upsert_ipl()]
+                level = 'ERROR' if any(r and r[0] == 'ERROR' for r in reports) else res[0]
+                res = level, res[1] + '\n' + '\n'.join(r[1] for r in reports if r)
         elif key == 'remove_from_img':
             res = IO.remove_from_img(confirm=self._confirm)
         elif key == 'rebuild_img':
@@ -1191,13 +1273,13 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
                 if it['col_meshes'] or it['col_prims']:
                     cb('inc_col', "COL: %d mesh(es), %d sphere/box — into its COL library in "
                        "the archive (or %s.col)" % (len(it['col_meshes']), len(it['col_prims']),
-                                                    it['name']), True)
+                                                    it['name']), it['inc_col'])
                 else:
                     cb('stub_col', "COL stub: empty collision", False,
                        tip="No collision in the scene — write an empty COL record")
             txds = sorted({it['txd'], it['lod_txd']} - {''})
             cb('inc_txd', "TXD: %s (merged with the archive TXD)"
-               % ", ".join(t + ".txd" for t in txds), True)
+               % ", ".join(t + ".txd" for t in txds), it['inc_txd'])
             boxes.append((it, cbs))
         lay.addStretch(1)
         area.setWidget(host)
@@ -1337,10 +1419,10 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
                 "Error in \"%s\":\n%s: %s\n\nSee the Max console for details."
                 % (label, type(e).__name__, e))
 
-    def _stub(self, label, key):
+    def _unknown_operation(self, label, key):
         QtWidgets.QMessageBox.information(
             self, "INU Tools",
-            "\"%s\" (%s) is not implemented yet." % (label, key))
+            "\"%s\" (%s) has no registered handler." % (label, key))
 
 
 # Реестр открытых окон (mode -> окно). Держим ссылки, иначе GC закроет.

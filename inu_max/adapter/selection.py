@@ -10,6 +10,26 @@
 # отсюда FLAG_DEFAULTS, в т.ч. при offscreen-рендере панели).
 
 import contextlib
+import json
+
+_DATA_IDS = {'water_vertices': 0x494E5510, 'path_knots': 0x494E5511,
+             'nodes_file': 0x494E5512, 'path_accessory': 0x494E5513,
+             'weight_merge': 0x494E5514, 'handsign_parent': 0x494E5515}
+_DATA_IDS['ipl_section'] = 0x494E5516
+_DATA_IDS['ipl_placeholder'] = 0x494E5517
+_DATA_IDS['nodes_identity'] = 0x494E5518
+
+
+def put_data(nodes, key, value):
+    """Structured data belongs in AppData: user properties alter quotes."""
+    raw = json.dumps(value, separators=(',', ':'), ensure_ascii=True)
+    for node in nodes:
+        _rt().setAppData(node, _DATA_IDS[key], raw)
+
+
+def get_data(node, key, default=None):
+    raw = _rt().getAppData(node, _DATA_IDS[key])
+    return json.loads(str(raw)) if raw else default
 
 
 def _rt():
@@ -220,6 +240,23 @@ def put_field(nodes, key, value):
     elif isinstance(value, str):
         value = '"%s"' % value.replace('"', "'")
     set_prop(nodes, key, value)
+
+
+def node_by_handle(handle):
+    if int(handle or 0) <= 0:
+        return None
+    rt = _rt()
+    node = rt.maxOps.getNodeByHandle(int(handle))
+    return node if node is not None and rt.isValidNode(node) else None
+
+
+def pick_node(prompt):
+    rt = _rt()
+    node = rt.pickObject(message=prompt)
+    try:
+        return node if rt.isValidNode(node) and rt.superClassOf(node) == rt.GeometryClass else None
+    except Exception:
+        return None
 
 
 def id_conflicts(o, model_id, limit=3):

@@ -29,8 +29,26 @@ PED_REQUIRED = (
     'Bip01',
 )
 
-# Суффикс копии: Blender «.001», Max «001». Имя фрейма пишется в DFF как
-# есть — «wheel_lf_dummy001» движок не узнает.
+# Engine names from the twelve SA vehicle tables, plus III/VC names.
+VEHICLE_ENGINE_NAMES = set('aileron_l aileron_pos aileron_r backrotor bargrip boat_flap_left boat_flap_right boat_moving_hi boat_rearflap_left boat_rearflap_right boat_rudder_hi body_front_dummy body_rear_dummy bogie_front bogie_rear bonnet_dummy boot_dummy bump_front_dummy bump_rear_dummy chainset chassis chassis_dummy door_lf_dummy door_lhs_dummy door_lr_dummy door_rf_dummy door_rhs_dummy door_rr_dummy elevator_l elevator_pos elevator_r elevators engine exhaust exhaust_ok extra1 extra2 extra3 extra4 extra5 extra6 forks_front forks_rear gear_l gear_r handlebars headlights headlights2 hookup light_front light_left light_rear light_right light_tailplane loadbay misc_a misc_b misc_c misc_d misc_e miscpos_a miscpos_b miscpos_c miscpos_d moving_prop moving_prop2 moving_rotor moving_rotor2 mudguard ped_arm ped_backseat ped_frontseat ped_left_entry ped_mid_entry ped_right_entry pedal_l pedal_r petrolcap propeller rear_axle rudder rudder_pos skid_left skid_right static_prop static_prop2 static_rotor static_rotor2 suspension_lf suspension_rf tail taillights taillights2 topknot toprotor transmission_f transmission_r ug_backbullbar ug_bonnet ug_bonnet_dam ug_bonnet_left ug_bonnet_left_dam ug_bonnet_right ug_bonnet_right_dam ug_frontbullbar ug_lights ug_lights_dam ug_nitro ug_roof ug_spoiler ug_spoiler_dam ug_wing_left ug_wing_right wheel_front wheel_front_dummy wheel_lb1_dummy wheel_lb2_dummy wheel_lb3_dummy wheel_lb_dummy wheel_lf1_dummy wheel_lf2_dummy wheel_lf3_dummy wheel_lf_dummy wheel_lm_dummy wheel_rb1_dummy wheel_rb2_dummy wheel_rb3_dummy wheel_rb_dummy wheel_rear wheel_rear_dummy wheel_rf1_dummy wheel_rf2_dummy wheel_rf3_dummy wheel_rf_dummy wheel_rm_dummy windscreen windscreen_dummy windscreen_hi_ok wing_lf_dummy wing_lr_dummy wing_rf_dummy wing_rr_dummy wingtip_pos'.split())
+ENGINE_NAMES = (VEHICLE_ENGINE_NAMES | set(VEHICLE_FATAL) | set(VEHICLE_WARN)
+                | set(BIKE_REQUIRED) | {n.lower() for n in PED_REQUIRED})
+ENGINE_TAILS = ('_dummy', '_ok', '_dam', '_vlo', '_hi', '_lo')
+_DOT_DUP = re.compile(r'(?:\.\d+)+$')
+_MAX_DUP = re.compile(r'^(.+?)(\d{3})$')
+
+
+def game_frame_name(name):
+    name = _DOT_DUP.sub('', str(name).strip())
+    match = _MAX_DUP.match(name)
+    if match:
+        base = match.group(1)
+        if base.lower() in ENGINE_NAMES or base.lower().endswith(ENGINE_TAILS):
+            return base
+    return name
+
+
+# Audit also recognizes the Max copy suffix.
 _DUP_SUFFIX = re.compile(r"\.?\d{3}$")
 
 

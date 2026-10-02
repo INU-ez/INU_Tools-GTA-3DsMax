@@ -36,6 +36,12 @@ def _sanitize(name):
 sanitize = _sanitize
 
 
+def preset_name(name):
+    """Visible filename for a new preset; an all-dot/empty name is invalid."""
+    value = re.sub(r'[^\w.\- ]+', '_', (name or '').strip()).lstrip('_ ').rstrip('. ')
+    return value if value.strip('.') else ''
+
+
 def preset_path(name):
     return os.path.join(presets_dir(), _sanitize(name) + '.txt')
 
@@ -140,21 +146,26 @@ def save_game_ids(name, ids):
 
 def create(name, copy_from=None):
     """Новый пресет (пустой или копия другого). False — уже есть / ошибка."""
+    name = preset_name(name)
+    if not name:
+        return False
     dst = preset_path(name)
     if os.path.isfile(dst):
         return False
     try:
+        if os.path.exists(game_path(name)):
+            os.remove(game_path(name))
+        g = set()
         src = preset_path(copy_from) if copy_from else None
         if src and os.path.isfile(src):
             with open(src, 'r', encoding='utf-8') as f:
                 data = f.read()
             g = game_ids(copy_from)
-            if g:
-                save_game_ids(name, g)
         else:
             data = '# GTA SA model ID preset: %s\n' % _sanitize(name)
-        with open(dst, 'w', encoding='utf-8') as f:
-            f.write(data)
+        _write_atomic(dst, data)
+        if g:
+            save_game_ids(name, g)
     except OSError as e:
         print("[INU] ID preset create %s: %r" % (name, e))
         return False
@@ -177,17 +188,25 @@ def delete(name):
 
 
 def rename(old, new):
+    new = preset_name(new)
+    if not new:
+        return False
     src, dst = preset_path(old), preset_path(new)
     if (_sanitize(old) == DEFAULT or _sanitize(old) == _sanitize(new)
             or os.path.exists(dst) or not os.path.isfile(src)):
         return False
     try:
+        if os.path.exists(game_path(new)):
+            os.remove(game_path(new))
         os.rename(src, dst)
+    except OSError as e:
+        print('[INU] ID preset rename %s: %r' % (old, e))
+        return False
+    try:
         if os.path.isfile(game_path(old)):
             os.replace(game_path(old), game_path(new))
     except OSError as e:
-        print("[INU] ID preset rename %s: %r" % (old, e))
-        return False
+        print('[INU] ID preset game markers: %r' % (e,))
     return True
 
 
@@ -228,7 +247,7 @@ class Preset:
     def is_free(self, i):
         """ID есть в пресете и ни одна его строка не занята."""
         pos = self._idx.get(i)
-        return bool(pos) and not any(self.entries[k][1] for k in pos)
+        return i not in self.game and bool(pos) and not any(self.entries[k][1] for k in pos)
 
     # — изменения —
     def _append(self, i, name):
@@ -250,7 +269,7 @@ class Preset:
 
     _order = None
 
-    def allocate(self, name, skip, prefer=None):
+    def allocate(self, name, skip, prefer=None, restart=False):
         """Первый по возрастанию свободный ID (не в skip) → занят именем.
         prefer — сначала он, если свободен. None — свободных нет. Поиск идёт
         курсором по отсортированным ID (skip за операцию только растёт)."""
@@ -260,7 +279,7 @@ class Preset:
         if self._order is None:
             self._order = sorted(self._idx)
             self._cur = 0
-        k = self._cur
+        k = 0 if restart else self._cur
         while k < len(self._order):
             i = self._order[k]
             if i not in skip and self.is_free(i):
@@ -273,11 +292,12 @@ class Preset:
 
     def reserve(self, i, name):
         """ID занят именем (перезаписывает имя; нет в пресете — добавляется)."""
-        if self.used().get(i) != name or i not in self.ids():
+        positions = self._idx.get(i, ())
+        if not positions or any(self.entries[k][1] != name for k in positions):
             self._set(i, name)
 
     def release(self, i):
-        if i in self.used():
+        if any(self.entries[k][1] for k in self._idx.get(i, ())):
             self._set(i, None)
             return True
         return False
@@ -327,7 +347,7 @@ class Preset:
             old = cur.get(i)
             if old and old.lower() != gname.lower() and i not in self.game:
                 clashes.append((i, old, gname))
-            if i not in have:
+            if not old:
                 added += 1
             if old != gname or i not in have:
                 self._set(i, gname)
@@ -339,3 +359,5 @@ class Preset:
             save(self.name, self.entries)
         if self.game != self._game0:
             save_game_ids(self.name, self.game)
+        self.changed = False
+        self._game0 = set(self.game)

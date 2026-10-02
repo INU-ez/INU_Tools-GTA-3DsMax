@@ -139,19 +139,22 @@ def _col_version(game):
     return game_versions.profile_for(game or 'SA').col_version
 
 
-def _prim_in(o, ref):
+def _prim_in(o, ref, version=1):
     """ColPrim примитива в системе узла ref (модель карты стоит в мире со
     своим поворотом, а в COL сферы / боксы — в системе модели): центр сферы
-    — через обратную матрицу ref, бокс — габарит в системе ref."""
+    — через обратную матрицу ref без масштаба, бокс — в той же системе."""
     from ..adapter.selection import _rt
     rt = _rt()
-    p = _sr().col_prim_data(o)
+    p = _sr().col_prim_data(o, version=version)
+    # COL mesh coordinates already include scale; the reference must be rigid.
+    frame = rt.matrix3(ref.transform.rotationpart)
+    frame.row4 = ref.transform.translationpart
     if p.kind == 'BOX':
-        mn, mx = rt.nodeGetBoundingBox(o, ref.transform)
+        mn, mx = rt.nodeGetBoundingBox(o, frame)
         p.bb_min = (float(mn.x), float(mn.y), float(mn.z))
         p.bb_max = (float(mx.x), float(mx.y), float(mx.z))
     else:
-        c = o.pos * rt.inverse(ref.transform)
+        c = o.pos * rt.inverse(frame)
         p.center = (float(c.x), float(c.y), float(c.z))
     return p
 
@@ -168,9 +171,9 @@ def _col_model(name, version, meshes, prims, opts, warnings, empty=False,
     pr = []
     for o in prims:
         if ref_node is not None:
-            pr.append(_prim_in(o, ref_node))
+            pr.append(_prim_in(o, ref_node, version))
             continue
-        p = sr.col_prim_data(o)
+        p = sr.col_prim_data(o, version=version)
         p.center = tuple(p.center[i] - origin[i] for i in range(3))
         p.bb_min = tuple(p.bb_min[i] - origin[i] for i in range(3))
         p.bb_max = tuple(p.bb_max[i] - origin[i] for i in range(3))
@@ -222,16 +225,35 @@ def _collision_objects(meshes_sel, picked):
 
 # ── запись одного DFF ────────────────────────────────────────────────
 
+def _merge_note(warnings, head, names):
+    if not names:
+        return
+    for i, message in enumerate(warnings):
+        if message.startswith(head):
+            names = message[len(head):].split(', ') + list(names)
+            warnings[i] = head + ', '.join(dict.fromkeys(names))
+            return
+    warnings.append(head + ', '.join(dict.fromkeys(names)))
+
+
+def _uv_anim_notes(warnings, materials, version):
+    from .dff_build import uv_anim_materials, keyframe_uv_materials
+    if version < 0x35000:
+        _merge_note(warnings, 'UV animation is not written — GTA III/VC have no UV animation; materials: ',
+                    uv_anim_materials(materials))
+    else:
+        _merge_note(warnings, 'UV Keyframes: no sampled keys; materials: ',
+                    keyframe_uv_materials(materials))
+
 def dff_bytes(name, nodes, fx, opts, warnings, collision=b''):
     """Байты .dff (клапм + аудит); name — имя модели для сообщений."""
     from inu_gta_core.dff import DFF_EXPORT_WARNINGS
-    from .dff_build import build_clump, keyframe_uv_materials
+    from .dff_build import build_clump
+    nodes = list(nodes)
+    _uv_anim_notes(warnings, [m for n in nodes for m in n.materials], opts['version'])
     clump = build_clump(nodes, version=opts['version'],
                         write_valpha=opts['vertex_alpha'], fx=fx,
                         collision=collision)
-    kf = keyframe_uv_materials([m for n in nodes for m in n.materials])
-    if kf:
-        _keyframe_note(warnings, kf, opts['version'])
     if opts['platform'] == 'MOBILE':
         for g in clump.geometries:
             g.is_native_ogl = True
@@ -241,22 +263,6 @@ def dff_bytes(name, nodes, fx, opts, warnings, collision=b''):
     data = clump.to_bytes()
     warnings += ["%s: %s" % (name, w) for w in DFF_EXPORT_WARNINGS]
     return data
-
-
-def _keyframe_note(warnings, kf, version):
-    """Режим Keyframes UV-анимации в Max ещё не сделан — одна строка на весь
-    экспорт, в начале списка (окно показывает первые 12); материалы
-    дописываются в неё. III/VC (RW < 3.5) UV-анимацию не пишут вовсе."""
-    head = ("UV animation 'Keyframes' is not implemented in 3ds Max yet — keys "
-            "ignored (%s), materials: " % (
-                "written as Scroll with Speed U/V" if version >= 0x35000
-                else "III/VC: no UV animation is written"))
-    for i, w in enumerate(warnings):
-        if w.startswith(head):
-            names = w[len(head):].split(", ")
-            warnings[i] = head + ", ".join(names + [n for n in kf if n not in names])
-            return
-    warnings.insert(0, head + ", ".join(kf))
 
 
 def _write(path, nodes, fx, opts, warnings, collision=b''):
@@ -318,8 +324,8 @@ def txd_data(name, objs, opts, warnings, base=None):
     if opts.get('platform') == 'MOBILE':
         # мобильный TXD в Max ещё не сделан — одна строка на весь экспорт,
         # в начало списка (окно показывает первые 12)
-        w = ("Mobile TXD is not implemented in 3ds Max yet — ignored: TXD "
-             "written in PC format")
+        w = ("Mobile target: TXD written in PC format, as in Blender; "
+             "convert it to the device's PVRTC/ETC format before installation")
         if w not in warnings:
             warnings.insert(0, w)
     note = "%d textures" % len(sections)
@@ -396,7 +402,8 @@ def export_groups(directory, name_override=''):
     model_groups = groups()
     if not model_groups:
         return done, ["Select the models to export"], warnings
-    if name_override and len(model_groups) == 1:
+    renamed = bool(name_override and len(model_groups) == 1)
+    if renamed:
         model_groups = {name_override: next(iter(model_groups.values()))}
     library = []                    # COL-библиотека: все модели в один .col
     shared_txd = []                 # «Shared TXD»: текстуры всех групп в один .txd
@@ -406,6 +413,16 @@ def export_groups(directory, name_override=''):
             o = models[kind]
             if o is None or not want:
                 continue
+            if kind == 'LOD':
+                from . import map_link as ML
+                from ..adapter import link_scene as LS
+                rec = LS.rec_of(o)
+                hd = base if models['DFF'] is not None else ''
+                fname = ((ML.new_lod_name(hd, base, game=opts['game']) if renamed else
+                          ML.lod_model_name(rec, base, hd=hd, game=opts['game'])) + '.dff')
+                note = ML.lod_name_note(rec, fname[:-4], hd, game=opts['game'])
+                if note:
+                    warnings.append(note)
             try:
                 nodes = _nodes_for([(o, None)], opts['pipeline'])
                 fx = []
@@ -498,7 +515,7 @@ def export_single(directory, name_override=''):
         if cols or prims:
             from inu_gta_core.col import write_col
             model = _col_model(name, 3 if opts['version'] >= 0x36000 else 1,
-                               cols, prims, opts, warnings, origin=_sr().world_pos(root))
+                               cols, prims, opts, warnings, ref_node=root)
             collision = write_col([model], target_game=opts['game'])
         elif settings.get('exp_col', True) and not any(
                 n.mesh is not None and n.mesh.skin for n in nodes):   # пед — без COL
@@ -532,14 +549,17 @@ def _txd(path, objs, opts, done, errors, warnings):
 def export(directory, name_override=''):
     """Точка входа окна экспорта. Модели — целиком, при любом открытом
     уровне стека (scene_read.full_result)."""
+    if settings.get('export_to_img', False):
+        return [], ['All → IMG requires the IMG resource dialog; use Export in the INU panel'], []
     with _sr().full_result():
         if settings.get('exp_single_dff', False):
             res = export_single(directory, name_override)
         else:
             res = export_groups(directory, name_override)
-    if settings.get('export_to_img', False):
-        # галка All → IMG в Max ещё не сделана: файлы идут в выбранную папку
-        res[2].insert(0, "All → IMG is not implemented in 3ds Max yet — ignored: "
-                         "export goes to the chosen folder (for .img use Map IO → "
-                         "IMG → Export)")
+    if not res[1] and settings.get('exp_ide_ipl', False):
+        from . import map_link_ops
+        for operation in (map_link_ops.upsert_ide, map_link_ops.upsert_ipl):
+            report = operation()
+            if report:
+                (res[1] if report[0] == 'ERROR' else res[2]).append(report[1])
     return res

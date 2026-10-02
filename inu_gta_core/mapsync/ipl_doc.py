@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import copy
 import os
+import struct
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -119,6 +120,76 @@ def _rot_diff(inst: IplInstance, rot) -> float:
     d = abs(inst.rot_x * rot[0] + inst.rot_y * rot[1]
             + inst.rot_z * rot[2] + inst.rot_w * rot[3])
     return 1.0 - min(d, 1.0)
+
+
+# Status «В IPL / координаты разошлись»: the scene placement against the
+# anchor it last wrote. Anchors are parsed back from 6-decimal text and kept
+# in float32 props, so the check needs a tolerance, not equality.
+POS_EPS = 1e-4
+ROT_EPS = 1e-5
+
+
+def pos_close(a, b, eps: float = POS_EPS) -> bool:
+    return all(abs(x - y) <= eps for x, y in zip(a, b))
+
+
+def rot_close(q, ref, eps: float = ROT_EPS) -> bool:
+    """Same rotation (x, y, z, w): both normalized (a file may hold 4-digit
+    quaternions), q and −q are one rotation. A zero quaternion never is."""
+    nq = sum(c * c for c in q) ** 0.5
+    nr = sum(c * c for c in ref) ** 0.5
+    if nq < 1e-9 or nr < 1e-9:
+        return False
+    q = [c / nq for c in q]
+    ref = [c / nr for c in ref]
+    if sum(x * y for x, y in zip(q, ref)) < 0.0:
+        q = [-c for c in q]
+    return all(abs(x - y) <= eps for x, y in zip(q, ref))
+
+
+def inst_drifted(inst: IplInstance, anchor: 'Anchor') -> bool:
+    """True when *inst* (what «Add» would write now) is not the row *anchor*
+    last wrote: position, or rotation when the anchor has one."""
+    if not pos_close((inst.pos_x, inst.pos_y, inst.pos_z), anchor.pos):
+        return True
+    return (anchor.rot is not None and not rot_close(
+        (inst.rot_x, inst.rot_y, inst.rot_z, inst.rot_w), anchor.rot))
+
+
+def _lod_moved(lod, before, after):
+    """Carry an existing SA LOD's own transform with its model.
+
+    IPL quaternions are the inverse of the scene rotation. The same
+    rigid delta applies to the offset and rotation, without normalizing
+    an untouched vanilla LOD (which must keep its original line).
+    """
+    old_p = (before.pos_x, before.pos_y, before.pos_z)
+    new_p = (after.pos_x, after.pos_y, after.pos_z)
+    old_q = (before.rot_x, before.rot_y, before.rot_z, before.rot_w)
+    new_q = (after.rot_x, after.rot_y, after.rot_z, after.rot_w)
+    out = copy.copy(lod)
+    offset = (lod.pos_x - old_p[0], lod.pos_y - old_p[1], lod.pos_z - old_p[2])
+    if not rot_close(old_q, new_q):
+        def unit(q):
+            length = sum(v * v for v in q) ** 0.5
+            return tuple(v / length for v in q) if length > 1e-9 else (0, 0, 0, 1)
+
+        def conj(q):
+            return (-q[0], -q[1], -q[2], q[3])
+
+        def mul(a, b):
+            x, y, z, w = a
+            i, j, k, r = b
+            return (w*i + x*r + y*k - z*j, w*j - x*k + y*r + z*i,
+                    w*k + x*j - y*i + z*r, w*r - x*i - y*j - z*k)
+
+        old_q, new_q = unit(old_q), unit(new_q)
+        delta = mul(conj(new_q), old_q)    # scene's new * inverse(old)
+        offset = mul(mul(delta, (*offset, 0)), conj(delta))[:3]
+        lq = (lod.rot_x, lod.rot_y, lod.rot_z, lod.rot_w)
+        out.rot_x, out.rot_y, out.rot_z, out.rot_w = mul(lq, conj(delta))
+    out.pos_x, out.pos_y, out.pos_z = (new_p[k] + offset[k] for k in range(3))
+    return out
 
 
 def _is_lod_of(lod_name: str, name: str) -> bool:
@@ -323,6 +394,7 @@ class IplEditor:
         self.messages: List[Message] = []
         self._lod_candidates: list = []   # (RemoveResult, Row)
         self._lod_grid = None             # 1 m cell -> LOD-named file rows
+        self._detached: set = set()       # ids of rows detach_lod() unlinked
         self._committed = False
 
     # ── lookup on the live (edited) rows ──
@@ -384,6 +456,7 @@ class IplEditor:
         lim = max(d2, ANCHOR_TOL * ANCHOR_TOL)
         others = sum(1 for o in self._by_mid.get(int(row.cur.model_id), ())
                      if o is not row and not o.deleted and o.lod is None
+                     and id(o) not in self._detached
                      and _dist2(o.cur, p) <= lim)
         if not others:
             return False
@@ -445,7 +518,9 @@ class IplEditor:
               lod: Optional[IplInstance] = None) -> PlaceResult:
         """Add or update one placement (and its LOD row when *lod* is given).
 
-        *lod* None keeps whatever LOD link the row already has."""
+        *lod* None keeps whatever LOD link the row already has. An existing
+        III/VC row keeps its own scale — the game doesn't apply it (re3/reVC
+        LoadObjectInstance); a new row gets *dff*'s."""
         res = PlaceResult(tag)
         row = None
         if anchor is not None:
@@ -467,10 +542,28 @@ class IplEditor:
             row = self._append(new)
             res.action = 'add'
         else:
+            # III/VC scale: the row's own (SA rows parse as 1.0, not written).
+            if row.inst is not None:
+                new.scale_x, new.scale_y, new.scale_z = (
+                    row.inst.scale_x, row.inst.scale_y, row.inst.scale_z)
             row.new_inst = new
             res.action = 'update'
         self.claimed.add(id(row))
         res._row = row
+
+        # Vanilla SA LODs can be offset / turned independently. Even when
+        # its mesh isn't in the scene, carry the file row with the model.
+        if (row.style == 'SA' and row.inst is not None and row.lod is not None
+                and row.lod.inst is not None and not row.lod.deleted):
+            moved = _lod_moved(row.lod.inst, row.inst, new)
+            if lod is None:
+                if inst_drifted(new, Anchor.of(row.inst)):
+                    lod = moved
+            else:
+                lod = copy.copy(lod)
+                lod.pos_x, lod.pos_y, lod.pos_z = moved.pos_x, moved.pos_y, moved.pos_z
+                lod.rot_x, lod.rot_y, lod.rot_z, lod.rot_w = (
+                    moved.rot_x, moved.rot_y, moved.rot_z, moved.rot_w)
 
         if lod is not None:
             lod_new = copy.copy(lod)
@@ -479,6 +572,19 @@ class IplEditor:
             if cur is None and row.style != 'SA':
                 cur = self._lod_by_content(row, lod_new)
             if (cur is not None and not cur.deleted and cur.inst is not None
+                    and int(cur.inst.model_id) == int(lod_new.model_id)):
+                lod_new.model_name = cur.inst.model_name
+            same_shared = (row.style == 'SA' and row.line is not None and row.lod is cur
+                           and cur is not None and not cur.deleted and cur.cur is not None
+                           and _same_values(_format_inst_line(lod_new, fla_extended=cur.fla,
+                                                              game=cur.style),
+                                            _format_inst_line(cur.cur, fla_extended=cur.fla,
+                                                              game=cur.style)))
+            if same_shared:
+                # Sharing an untouched file LOD is safe. A moved owner gets
+                # its own row below; the remaining owners keep this one.
+                res.lod_action = 'unchanged'
+            elif (cur is not None and not cur.deleted and cur.inst is not None
                     and id(cur) not in self.claimed
                     and id(cur) not in self.reserved
                     and self._refcount(cur, excluding=row) == 0):
@@ -486,6 +592,15 @@ class IplEditor:
                 # name (vanilla LODs aren't always «LOD<base>»).
                 if int(cur.inst.model_id) == int(lod_new.model_id):
                     lod_new.model_name = cur.inst.model_name
+                # q and −q are one rotation: keep the row's own sign.
+                n, c = lod_new, cur.inst
+                if (n.rot_x * c.rot_x + n.rot_y * c.rot_y
+                        + n.rot_z * c.rot_z + n.rot_w * c.rot_w) < 0:
+                    n.rot_x, n.rot_y, n.rot_z, n.rot_w = (
+                        -n.rot_x, -n.rot_y, -n.rot_z, -n.rot_w)
+                # III/VC scale: the row's own (the game doesn't apply it).
+                lod_new.scale_x, lod_new.scale_y, lod_new.scale_z = (
+                    cur.inst.scale_x, cur.inst.scale_y, cur.inst.scale_z)
                 cur.new_inst = lod_new
                 res.lod_action = 'update'
             else:
@@ -529,13 +644,28 @@ class IplEditor:
         """Unlink a placement from its LOD and drop the LOD row if unused."""
         res = RemoveResult(tag)
         row = self._find(anchor, ANCHOR_TOL)
-        if row is None or row.lod is None:
+        if row is None:
+            self.messages.append(Message(
+                'WARNING', "«{0}»: строка не найдена в файле — удалять нечего",
+                anchor.model_name or anchor.model_id, tag=tag))
             self.removes.append(res)
             return res
-        self._lod_candidates.append((res, row.lod))
-        row.new_inst = copy.copy(row.cur)
-        row.lod = None
-        self.claimed.add(id(row))
+        self.claimed.add(id(row))      # a stacked twin's anchor takes the other row
+        self._detached.add(id(row))    # its LOD isn't left to it (_lod_taken)
+        lod = row.lod
+        if lod is None and row.style != 'SA':
+            lod = self._lod_by_content(row)     # VC/III: no lod_index column
+        if lod is None or lod.deleted:
+            self.messages.append(Message(
+                'INFO', "«{0}»: у строки нет LOD — отвязывать нечего",
+                anchor.model_name or anchor.model_id, tag=tag))
+            self.removes.append(res)
+            return res
+        self._lod_candidates.append((res, lod))
+        self.claimed.add(id(lod))
+        if row.lod is not None:        # SA: the model row loses its lod_index
+            row.new_inst = copy.copy(row.cur)
+            row.lod = None
         res._row = row
         self.removes.append(res)
         return res
@@ -650,6 +780,26 @@ class IplEditor:
         return [m for m in self.messages if m.level in ('WARNING', 'ERROR')]
 
 
+_F32 = struct.Struct('<f')
+
+
+def _same_number(x: float, y: float) -> bool:
+    """Numbers the game can't tell apart: within the %.6f step of
+    _format_inst_line (1e-6: 14.1015625 is written 14.101562; float32
+    2796.9453125 is written 2796.945312 where R* wrote 2796.945313), or the
+    same float32 — CFileLoader reads inst/objs with sscanf("%f"). Whole
+    numbers (id, interior, lod_index, flags) must match exactly: past 2^24
+    two of them share a float32."""
+    if abs(x - y) <= 1e-6:
+        return True
+    if x.is_integer() and y.is_integer():
+        return False
+    try:
+        return _F32.unpack(_F32.pack(x)) == _F32.unpack(_F32.pack(y))
+    except (OverflowError, struct.error):
+        return False
+
+
 def _same_values(a: str, b: str) -> bool:
     """True when two inst lines carry the same numbers (formatting aside)."""
     pa, pb = _tokens(a), _tokens(b)
@@ -659,12 +809,11 @@ def _same_values(a: str, b: str) -> bool:
         if x == y:
             continue
         try:
-            # 1e-6, а не 5e-7 (INU Max): строка с 7 знаками (14.1015625)
-            # после %.6f отличается ровно на 5e-7, в float — чуть больше, и
-            # нетронутая строка ванильного LAn2.IPL переписывалась
-            if abs(float(x) - float(y)) > 1e-6:
-                return False
+            fx, fy = float(x), float(y)
         except ValueError:
             if x.lower() != y.lower():
                 return False
+            continue
+        if not _same_number(fx, fy):
+            return False
     return True

@@ -92,27 +92,9 @@ def region_files(region=None):
         res = find_all_resources(root)
     except Exception:                                  # noqa: BLE001
         return [], []
-    text, seen = [], set()
-    for p in res.ipl_paths:
-        k = os.path.normcase(os.path.abspath(p))
-        if k in seen or not os.path.isfile(p) or not _region_match(p, region):
-            continue
-        seen.add(k)
-        text.append(p)
-    stems = {os.path.splitext(os.path.basename(p))[0].lower() for p in text}
-    binary, taken = [], set()
-    for arch in _archives():
-        try:
-            ents = read_directory(arch)
-        except Exception:                              # noqa: BLE001
-            continue
-        for e in ents:
-            m = _STREAM.match(e.name)
-            if not m or m.group(1).lower() not in stems or e.name.lower() in taken:
-                continue
-            taken.add(e.name.lower())
-            binary.append((e.name, arch))
-    return text, binary
+    from inu_gta_core.map_files import region_files as resolve_region
+    return resolve_region([p for p in res.ipl_paths if os.path.isfile(p)],
+                          _archives(), region, read_directory, root=root)
 
 
 def scan_binary_ipls():
@@ -129,7 +111,7 @@ def scan_binary_ipls():
                                     enabled=old.get(os.path.basename(p).lower(), True))
                                for p in text])
     settings.set('binary_ipls', [dict(name=n, img_source=a, enabled=old.get(n.lower(), True))
-                                 for n, a in binary])
+                                 for n, a, entry in binary])
     settings.set('map_scanned_region', region)
     return 'INFO', "%d binary + %d text IPL(s) for region '%s'" % (len(binary), len(text), region)
 
@@ -188,13 +170,13 @@ def _region_txds(ide_models):
         except Exception:                              # noqa: BLE001
             pass
     by_arch = {}
-    for n, a in binary:
-        by_arch.setdefault(a, []).append(n)
+    for n, a, entry in binary:
+        by_arch.setdefault(a, []).append((n, entry))
     for a, names in by_arch.items():
         with ImgReader(a) as r:
-            for n in names:
+            for n, entry in names:
                 try:
-                    ids |= {i.model_id for i in _read_binary_ipl(r.read(n) or b'').instances}
+                    ids |= {i.model_id for i in _read_binary_ipl(r.read_entry(entry) or b'').instances}
                 except Exception:                      # noqa: BLE001
                     pass
     return {(ide_models[i].txd_name or '').lower() for i in ids if i in ide_models} - {''}
@@ -222,6 +204,26 @@ def extract_textures():
     if not archives:
         return 'ERROR', "No IMG archives in the game folder"
     os.makedirs(os.path.join(cdir, 'textures'), exist_ok=True)
+    from collections import Counter
+    from datetime import datetime
+    err_log = os.path.join(cdir, '_txd_errors.log')
+    skip_log = os.path.join(cdir, '_extract_skipped.log')
+    for path in (err_log, skip_log):
+        if os.path.isfile(path):
+            os.remove(path)
+    skipped = []
+    skip_counts = Counter()
+
+    def skip(reason, tex, src, extra=''):
+        skip_counts[reason] += 1
+        skipped.append('%-18s | %-40s | %-30s | %s' %
+                       (reason, str(tex)[:40], str(src)[:30], extra))
+
+    def error(src, ex):
+        message = '%s: %s' % (src, ex)
+        errors.append(message)
+        with open(err_log, 'a', encoding='utf-8') as stream:
+            stream.write(message + '\n')
     idx = _load_index(cdir)
     files = idx.setdefault('files', {})       # запись → [архив, смещение, размер]
     txds = idx.setdefault('txd', {})          # TXD → [архив, смещение, размер]
@@ -234,27 +236,42 @@ def extract_textures():
         idx['tex_ver'] = TEX_VER
     stale = set(idx.get('tex_stale') or ())
     region = settings.get('map_region', 'ALL') or 'ALL'
+    from ..profiler import Profiler
+    prof = Profiler('Extract Resources (%s)' % region, enabled=bool(settings.get('profile_enabled', False)))
     want_txd = None
     if region != 'ALL':
         ide_models, _src = {}, {}
-        _read_ides(list_ide_files(root), ide_models, _src)
+        with prof.stage('region TXD list'):
+            _read_ides(list_ide_files(root), ide_models, _src)
         want_txd = _region_txds(ide_models)
     # победители: первый архив, первая запись
-    win = {}
-    for a in archives:
+    from inu_gta_core import map_files as MF
+    import zlib
+    failed_archives = set()
+    def list_entries(path):
         try:
-            for e in read_directory(a):
-                k = e.name.lower()
-                if k.endswith(('.dff', '.col', '.txd')) and k not in win:
-                    win[k] = (a, e)
-        except Exception as ex:                        # noqa: BLE001
-            print("[INU extract] %s: %r" % (a, ex))
+            with prof.stage('read_directory (archives)'):
+                return read_directory(path)
+        except Exception as ex:
+            error(path, ex)
+            failed_archives.add(path)
+            return []
+    errors = []
+    win = MF.extract_winners(archives, list_entries)
+    states = {a: MF.archive_state(a) for a in archives}
+    previous_states = dict(idx.get('archives') or {})
+    have_png = {f.lower() for f in os.listdir(os.path.join(cdir, 'textures'))
+                if f.lower().endswith('.png')}
+    idx.setdefault('txd_png', {})
+    txd_stamps = {}
     todo_files = [(k, a, e) for k, (a, e) in win.items() if not k.endswith('.txd')]
     todo_txd = [(k, a, e) for k, (a, e) in win.items() if k.endswith('.txd')
                 and (want_txd is None or k[:-4] in want_txd)]
+    for k, (a, e) in win.items():
+        if k.endswith('.txd') and want_txd is not None and k[:-4] not in want_txd:
+            skip('archive_filtered', '*', k, 'region=%s' % region)
     n_file = n_same = 0
     n_tex = n_tex_skip = n_txd_same = 0
-    errors = []
     readers = {}
 
     def rd(a):
@@ -266,6 +283,7 @@ def extract_textures():
     total = len(todo_files) + len(todo_txd)
     step = 0
     cancelled = False
+    completed = False
     rt.progressStart("INU: Extract resources")
     try:
         for k, a, e in todo_files:
@@ -274,39 +292,95 @@ def extract_textures():
                                    or rt.getProgressCancel()):
                 cancelled = True
                 break
-            stamp = [a, e.offset, e.size]
+            same = states[a] is not None and previous_states.get(MF.archive_key(a)) == states[a]
             out = os.path.join(cdir, e.name)
-            if files.get(k) == stamp and os.path.isfile(out):
+            if MF.cached_ok(files.get(k), a, e, archive_same=same, have_output=os.path.isfile(out)):
                 n_same += 1
                 continue
-            data = rd(a).read_entry(e)
-            with open(out, 'wb') as f:
-                f.write(data)
-            files[k] = stamp
-            n_file += 1
+            try:
+                data = rd(a).read_entry(e)
+                stamp = MF.entry_stamp(a, e, zlib.crc32(data))
+                if MF.cached_ok(files.get(k), a, e, crc=stamp[3], have_output=os.path.isfile(out)):
+                    n_same += 1
+                    continue
+                files.pop(k, None)
+                from .file_write import write_batch
+                with prof.stage('extract DFF/COL'):
+                    write_batch({out: data})
+                files[k] = stamp
+                n_file += 1
+            except Exception as ex:
+                files.pop(k, None)
+                failed_archives.add(a)
+                error(e.name, ex)
         tdir = os.path.join(cdir, 'textures')
 
         def decode(item):
             k, a, e, data = item
+            texs, skips = [], []
             try:
-                return k, [(t.name, t.width, t.height, tex_rgba(t)) for t in read_txd(data)
-                           if t.pixels and t.width > 0 and t.height > 0], None
+                with prof.stage('read_txd (decode)'):
+                    for t in read_txd(data):
+                        reason = ('no_name' if not t.name.strip() else
+                                  'zero_dims' if t.width <= 0 or t.height <= 0 else
+                                  'no_pixels' if not t.pixels else '')
+                        if reason:
+                            skips.append((reason, t.name, '%sx%s' % (t.width, t.height)))
+                        else:
+                            texs.append((t.name, t.width, t.height, tex_rgba(t)))
+                return k, texs, skips, None
             except Exception as ex:                    # noqa: BLE001
-                return k, [], "%s: %s" % (e.name, ex)
+                return k, [], skips, str(ex)
+
+        def fold(res):
+            nonlocal n_tex, n_tex_skip
+            k, texs, skips, err = res
+            for reason, name, extra in skips:
+                skip(reason, name, k, extra)
+            if err is not None:
+                skip('parse_error', '*', k, err)
+                error(k, err)
+                failed_archives.add(win[k][0])
+                return
+            with prof.stage('write PNG'):
+                n_tex, n_tex_skip, write_errors = _write_texs(
+                    (k, texs, None), tdir, write_png, _safe_name, errors,
+                    n_tex, n_tex_skip, stale, skip)
+            if write_errors:
+                for name, ex in write_errors:
+                    error('%s / %s' % (k, name), ex)
+                failed_archives.add(win[k][0])
+            else:
+                txds[k] = txd_stamps[k]
+                idx['txd_png'][k] = [(_safe_name(t[0]) + '.png').lower() for t in texs]
         batch = []
         with ThreadPoolExecutor(max_workers=4) as pool:
             for k, a, e in todo_txd if not cancelled else []:
-                stamp = [a, e.offset, e.size]
-                if txds.get(k) == stamp:
+                same = states[a] is not None and previous_states.get(MF.archive_key(a)) == states[a]
+                present = MF.txd_outputs_present(idx, k, have_png)
+                if MF.cached_ok(txds.get(k), a, e, archive_same=same, have_output=present):
                     n_txd_same += 1
                     continue
-                batch.append((k, a, e, rd(a).read_entry(e)))
+                try:
+                    with prof.stage('img.read (TXD bytes)'):
+                        data = rd(a).read_entry(e)
+                except Exception as ex:
+                    txds.pop(k, None)
+                    failed_archives.add(a)
+                    skip('parse_error', '*', k, str(ex))
+                    error(k, ex)
+                    continue
+                stamp = MF.entry_stamp(a, e, zlib.crc32(data))
+                if MF.cached_ok(txds.get(k), a, e, crc=stamp[3], have_output=present):
+                    n_txd_same += 1
+                    continue
+                txds.pop(k, None)
+                txd_stamps[k] = stamp
+                batch.append((k, a, e, data))
                 if len(batch) < 16:
                     continue
                 for res in pool.map(decode, batch):
-                    n_tex, n_tex_skip = _write_texs(res, tdir, write_png, _safe_name, errors,
-                                                    n_tex, n_tex_skip, stale)
-                    txds[res[0]] = [win[res[0]][0], win[res[0]][1].offset, win[res[0]][1].size]
+                    fold(res)
                 step += len(batch)
                 batch = []
                 if not rt.progressUpdate(100.0 * step / max(total, 1)) or rt.getProgressCancel():
@@ -314,15 +388,26 @@ def extract_textures():
                     break
             if batch and not cancelled:
                 for res in pool.map(decode, batch):
-                    n_tex, n_tex_skip = _write_texs(res, tdir, write_png, _safe_name, errors,
-                                                    n_tex, n_tex_skip, stale)
-                    txds[res[0]] = [win[res[0]][0], win[res[0]][1].offset, win[res[0]][1].size]
+                    fold(res)
+        completed = True
     finally:
         rt.progressEnd()
         for r in readers.values():
             r.close()
+        if completed and not cancelled:
+            for a in archives:
+                if a not in failed_archives:
+                    filtered = [k for k, (arch, _) in win.items() if arch == a and
+                                k.endswith('.txd') and want_txd is not None and k[:-4] not in want_txd]
+                    MF.finish_archive(idx, a, states[a], filtered)
         idx['tex_stale'] = sorted(stale)
         _save_index(cdir, idx)
+        prof.print_report()
+        prof.save_log(os.path.join(cdir, '_profile.log'))
+        with open(skip_log, 'w', encoding='utf-8') as stream:
+            stream.write('# Extract %s: %d TXD unchanged since last run — not re-checked\n' %
+                         (datetime.now().isoformat(timespec='seconds'), n_txd_same))
+            stream.write('\n'.join(skipped))
     lines = ["DFF/COL: %d extracted, %d unchanged · textures: %d written, %d kept (same or "
              "larger file there), %d TXD unchanged" % (n_file, n_same, n_tex, n_tex_skip,
                                                         n_txd_same)]
@@ -330,12 +415,19 @@ def extract_textures():
         lines.append("Region %s: %d TXD" % (region, len(todo_txd)))
     if cancelled:
         lines.insert(0, "Cancelled — what was extracted stays in the cache.")
+    if skip_counts:
+        lines.append('Skipped: %d (%s)' % (sum(skip_counts.values()), ', '.join(
+            '%s=%d' % item for item in skip_counts.most_common())))
+        lines.append('Details: ' + skip_log)
+    if errors:
+        lines.append('Errors: %d, see %s' % (len(errors), err_log))
     lines += ["Error: " + x for x in errors[:5]]
     return ('WARNING' if errors or cancelled else 'INFO'), "\n".join(lines)
 
 
-def _write_texs(res, tdir, write_png, safe, errors, n_tex, n_skip, stale):
+def _write_texs(res, tdir, write_png, safe, errors, n_tex, n_skip, stale, skip=None):
     k, texs, err = res
+    write_errors = []
     if err:
         errors.append(err)
     for name, w, h, px in texs:
@@ -344,14 +436,18 @@ def _write_texs(res, tdir, write_png, safe, errors, n_tex, n_skip, stale):
         old = None if fn.lower() in stale else _png_size(p)
         if old is not None and old[0] >= w and old[1] >= h:
             n_skip += 1
+            if skip:
+                skip('dedup', name, k, '%sx%s kept; incoming %sx%s' % (*old, w, h))
             continue
         try:
             write_png(p, px, w, h)
             stale.discard(fn.lower())
             n_tex += 1
         except Exception as ex:                        # noqa: BLE001
-            errors.append("%s: %s" % (name, ex))
-    return n_tex, n_skip
+            write_errors.append((name, str(ex)))
+            if skip:
+                skip('write_error', name, k, str(ex))
+    return n_tex, n_skip, write_errors
 
 
 def cache_has_models():
@@ -408,7 +504,12 @@ def _importer_cls():
             return {}
 
         def rescue(self, missing):
-            out = {t: self.flat[t] for t in missing if t in self.flat}
+            from ..adapter.texture import _safe_name
+            out = {}
+            for t in missing:
+                path = self.flat.get(t) or self.flat.get(_safe_name(t).lower())
+                if path:
+                    out[t] = path
             if self.flat_old and not self.flat_old.isdisjoint(out):
                 self.flat_old = set()                  # пометка — одна на импорт
                 self.notes.append("Texture cache is from an older version (GTA III colours "
@@ -476,98 +577,109 @@ def import_map():
         return 'ERROR', "Set the game folder"
     text, binary = region_files()
     text = [p for p in text if _enabled('text_ipls', os.path.basename(p))]
-    binary = [(n, a) for n, a in binary if _enabled('binary_ipls', n)]
+    binary = [(n, a, entry) for n, a, entry in binary if _enabled('binary_ipls', n)]
     if not text and not binary:
         return 'ERROR', "No IPL for this region (or all unchecked)"
-    ide_models, ide_source = {}, {}
-    _read_ides(list_ide_files(root), ide_models, ide_source)
-    instances, inst_src, src_of = [], {}, []
-    text_base, errors = {}, []
-    for p in text:
-        try:
-            ipl = read_ipl(p)
-        except Exception as e:                         # noqa: BLE001
-            errors.append("%s: %s" % (os.path.basename(p), e))
-            continue
-        base, n_local = len(instances), len(ipl.instances)
-        stem = os.path.splitext(os.path.basename(p))[0]
-        text_base[stem.lower()] = (base, n_local)
-        for k, inst in enumerate(ipl.instances):
-            li = inst.lod_index
-            inst.lod_index = base + li if 0 <= li < n_local else -1
-            if not inst.model_name and inst.model_id in ide_models:
-                inst.model_name = ide_models[inst.model_id].model_name
-            inst_src[base + k] = (p, base)
-            instances.append(inst)
-            src_of.append(stem)
-    by_arch = {}
-    for n, a in binary:
-        by_arch.setdefault(a, []).append(n)
-    n_bin_lod = 0
-    for a, names in by_arch.items():
-        with ImgReader(a) as r:
-            for n in names:
-                try:
-                    ipl = _read_binary_ipl(r.read(n) or b'')
-                except Exception as e:                 # noqa: BLE001
-                    errors.append("%s: %s" % (n, e))
-                    continue
-                stem = _STREAM.match(n).group(1).lower()
-                tb = text_base.get(stem)
-                for inst in ipl.instances:
-                    li = inst.lod_index
-                    # lod_index бинарного — в одноимённый ТЕКСТОВЫЙ IPL
-                    if tb is not None and 0 <= li < tb[1]:
-                        inst.lod_index = tb[0] + li
-                        n_bin_lod += 1
-                    else:
-                        inst.lod_index = -1
-                    if not inst.model_name and inst.model_id in ide_models:
-                        inst.model_name = ide_models[inst.model_id].model_name
-                    instances.append(inst)
-                    src_of.append(os.path.splitext(n)[0])
-    if not instances:
-        return 'ERROR', "The region IPLs have no placements"
+    from ..profiler import Profiler
+    prof = Profiler('Import Map (%s)' % (settings.get('map_region', 'ALL') or 'ALL'),
+                    enabled=bool(settings.get('profile_enabled', False)))
+    try:
+        ide_models, ide_source = {}, {}
+        with prof.stage('read IDE'):
+            _read_ides(list_ide_files(root), ide_models, ide_source)
+        instances, inst_src, src_of = [], {}, []
+        text_base, errors = {}, []
+        for p in text:
+            try:
+                with prof.stage('read IPL (text)'):
+                    ipl = read_ipl(p)
+            except Exception as e:                         # noqa: BLE001
+                errors.append("%s: %s" % (os.path.basename(p), e))
+                continue
+            base, n_local = len(instances), len(ipl.instances)
+            stem = os.path.splitext(os.path.basename(p))[0]
+            text_base[stem.lower()] = (base, n_local)
+            for k, inst in enumerate(ipl.instances):
+                li = inst.lod_index
+                inst.lod_index = base + li if 0 <= li < n_local else -1
+                if not inst.model_name and inst.model_id in ide_models:
+                    inst.model_name = ide_models[inst.model_id].model_name
+                inst_src[base + k] = (p, base)
+                instances.append(inst)
+                src_of.append(stem)
+        by_arch = {}
+        for n, a, entry in binary:
+            by_arch.setdefault(a, []).append((n, entry))
+        n_bin_lod = 0
+        for a, names in by_arch.items():
+            with ImgReader(a) as r:
+                for n, entry in names:
+                    try:
+                        with prof.stage('read IPL (binary)'):
+                            ipl = _read_binary_ipl(r.read_entry(entry) or b'')
+                    except Exception as e:                 # noqa: BLE001
+                        errors.append("%s: %s" % (n, e))
+                        continue
+                    stem = _STREAM.match(n).group(1).lower()
+                    tb = text_base.get(stem)
+                    for inst in ipl.instances:
+                        li = inst.lod_index
+                        # lod_index бинарного — в одноимённый ТЕКСТОВЫЙ IPL
+                        if tb is not None and 0 <= li < tb[1]:
+                            inst.lod_index = tb[0] + li
+                            n_bin_lod += 1
+                        else:
+                            inst.lod_index = -1
+                        if not inst.model_name and inst.model_id in ide_models:
+                            inst.model_name = ide_models[inst.model_id].model_name
+                        instances.append(inst)
+                        src_of.append(os.path.splitext(n)[0])
+        if not instances:
+            return 'ERROR', "The region IPLs have no placements"
 
-    group = bool(settings.get('map_group_by_ipl', True))
-    rt.execute(_LAYERS)
-    made = set()
+        group = bool(settings.get('map_group_by_ipl', True))
+        rt.execute(_LAYERS)
+        made = set()
 
-    def ensure(name, parent=''):
-        if name not in made:
-            rt.inuMapEnsureLayer(name, parent)
-            made.add(name)
+        def ensure(name, parent=''):
+            if name not in made:
+                rt.inuMapEnsureLayer(name, parent)
+                made.add(name)
 
-    def layer_of(idx, inst, is_lod):
-        if group:
-            ipl = src_of[idx]
-            lay = ipl + ('_LOD' if is_lod else '_DFF')
-            ensure(lay, ipl)
-            ensure(ipl + '_COL', ipl)
-            return lay, ipl + '_COL'
-        if is_lod:
-            ensure('Map_LOD')
+        def layer_of(idx, inst, is_lod):
+            if group:
+                ipl = src_of[idx]
+                lay = ipl + ('_LOD' if is_lod else '_DFF')
+                ensure(lay, ipl)
+                ensure(ipl + '_COL', ipl)
+                return lay, ipl + '_COL'
+            if is_lod:
+                ensure('Map_LOD')
+                ensure('Map_COL')
+                return 'Map_LOD', 'Map_COL'
+            ide = ide_models.get(inst.model_id)
+            dd = float(getattr(ide, 'draw_distance', 300.0) or 300.0) if ide is not None else 300.0
+            lay = 'Map_DFF_Far' if dd >= 300 else ('Map_DFF_Mid' if dd >= 100 else 'Map_DFF_Near')
+            ensure(lay)
             ensure('Map_COL')
-            return 'Map_LOD', 'Map_COL'
-        ide = ide_models.get(inst.model_id)
-        dd = float(getattr(ide, 'draw_distance', 300.0) or 300.0) if ide is not None else 300.0
-        lay = 'Map_DFF_Far' if dd >= 300 else ('Map_DFF_Mid' if dd >= 100 else 'Map_DFF_Near')
-        ensure(lay)
-        ensure('Map_COL')
-        return lay, 'Map_COL'
+            return lay, 'Map_COL'
 
-    imp = _importer_cls()()
-    imp.setup(cdir)
-    imp.errors += errors
-    imp.infos = []
-    if n_bin_lod:
-        imp.infos.append("Binary IPL rows linked to LOD rows of their text IPL: %d" % n_bin_lod)
-    scene = map_scene.scene_index()
-    return imp.place(instances, inst_src, ide_models, ide_source, scene,
-                     title="INU: Import Map",
-                     skip_existing=bool(settings.get('map_skip_dupes', False)),
-                     reuse_scene=False, layer_of=layer_of,
-                     noimg_text="not in the cache (Extract resources)")
+        imp = _importer_cls()()
+        imp.setup(cdir)
+        imp.errors += errors
+        imp.infos = []
+        if n_bin_lod:
+            imp.infos.append("Binary IPL rows linked to LOD rows of their text IPL: %d" % n_bin_lod)
+        scene = map_scene.scene_index()
+        return imp.place(instances, inst_src, ide_models, ide_source, scene,
+                         title="INU: Import Map",
+                         skip_existing=bool(settings.get('map_skip_dupes', False)),
+                         reuse_scene=False, layer_of=layer_of,
+                         prof=prof, noimg_text="not in the cache (Extract resources)")
+
+    finally:
+        prof.print_report()
+        prof.save_log(os.path.join(cdir, '_profile.log'))
 
 
 # ── BBox ─────────────────────────────────────────────────────────────
@@ -616,7 +728,10 @@ def _bbox_nodes():
     """Меши сцены без коллизии (COL / SHA, сферы и боксы)."""
     rt = pymxs.runtime
     from ..adapter import scene_read as sr
-    return [o for o in rt.geometry if not sr.is_col(o) and not sr.col_prim(o)]
+    from ..adapter.selection import get_field
+    return [o for o in rt.geometry if not sr.is_col(o) and not sr.col_prim(o)
+            and not get_field(o, 'preview', False) and not get_field(o, 'section', '')
+            and rt.classOf(o) != rt.TargetObject]
 
 
 def toggle_bbox():

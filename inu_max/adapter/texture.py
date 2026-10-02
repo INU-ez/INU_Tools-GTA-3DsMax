@@ -272,6 +272,10 @@ def build_tex_map(dff_path, needed_names=None):
     # версии декода (без метки): покрывающие TXD проходятся ещё раз, но
     # лежащий PNG переписывается, только если его пиксели изменились (R↔B)
     have = _png_map(out_dir)
+    for name in needed:
+        safe = _safe_name(name).lower()
+        if name not in have and safe in have:
+            have[name] = have[safe]
     cur = _ver_ok(out_dir) or not have          # пустая папка — уже текущая
     if cur and needed and needed <= set(have):
         print("[INU tex] все %d текстур уже в %s" % (len(needed), out_dir))
@@ -313,6 +317,10 @@ def build_tex_map(dff_path, needed_names=None):
         _ver_mark(out_dir)          # что было чем обновить — обновлено
 
     tex_map = _png_map(out_dir)
+    for name in needed:
+        safe = _safe_name(name).lower()
+        if name not in tex_map and safe in tex_map:
+            tex_map[name] = tex_map[safe]
     print("[INU tex] .txd найдено=%d, извлечено=%d → %d текстур в %s"
           % (len(cands), n_txd, len(tex_map), out_dir))
     return tex_map

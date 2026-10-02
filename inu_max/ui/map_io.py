@@ -7,7 +7,6 @@
 # (ops/map_import.py: Find IMG / Find IDE / Import); вкладка Export — связь
 # IDE / IPL (ops/map_link_ops.py: Add / Del / Export, Sync, Restore, Check,
 # Unlink, статусы — ops/map_link.py); IMG, вкладка Map, секции IPL, ID
-# Manager — пока заглушки (dispatch → «not implemented»). Интерфейсные вещи
 # работают: списки файлов, пути, счётчики IDE/IPL и районы (ядро
 # inu_gta_core).
 
@@ -1033,6 +1032,42 @@ class ObjectIdeIpl(BuildMixin, QtWidgets.QWidget):
         self._w_id = QtWidgets.QWidget()
         self._w_id.setLayout(self._row_id)
         bl.addWidget(self._w_id)
+        self._txd_target = None
+        self._partner_node = None
+        self._txd = QtWidgets.QLineEdit()
+        self._txd.setPlaceholderText('= model name')
+        self._txd.textEdited.connect(lambda _text: setattr(self, '_txd_target', self._obj))
+        self._txd.editingFinished.connect(self._commit_txd)
+        self._w_txd = QtWidgets.QWidget()
+        self._w_txd.setLayout(self._labeled('TXD', self._txd, label_w=58))
+        bl.addWidget(self._w_txd)
+        self._w_partner = QtWidgets.QWidget()
+        lr = QtWidgets.QHBoxLayout(self._w_partner)
+        lr.setContentsMargins(2, 0, 0, 0)
+        lr.addWidget(QtWidgets.QLabel('LOD partner'))
+        self._partner_label = QtWidgets.QLabel('—')
+        lr.addWidget(self._partner_label, 1)
+        pick = QtWidgets.QPushButton('Pick')
+        pick.clicked.connect(self._pick_lod)
+        lr.addWidget(pick)
+        clear = QtWidgets.QPushButton('×')
+        clear.clicked.connect(lambda: self._set_lod(None))
+        lr.addWidget(clear)
+        find = QtWidgets.QPushButton('Find LOD')
+        find.clicked.connect(lambda: self._dispatch('Find LOD', 'auto_find_lod'))
+        lr.addWidget(find)
+        bl.addWidget(self._w_partner)
+        self._lod_id = QtWidgets.QSpinBox()
+        self._lod_id.setRange(0, 2 ** 31 - 1)
+        self._lod_id.valueChanged.connect(self._write_lod_id)
+        self._w_lod_id = QtWidgets.QWidget()
+        self._w_lod_id.setLayout(self._labeled('LOD ID', self._lod_id, label_w=58))
+        bl.addWidget(self._w_lod_id)
+        self._lod_from_ide = QtWidgets.QLabel('')
+        bl.addWidget(self._lod_from_ide)
+        self._clear_id = QtWidgets.QPushButton('Clear ID')
+        self._clear_id.clicked.connect(lambda: self._dispatch('Clear selected IDs', 'id_manager_clear_selected'))
+        bl.addWidget(self._clear_id)
         self._dd = self._float_spin("Object draw distance (IDE)", 'draw_distance')
         self._w_dd = QtWidgets.QWidget()
         self._w_dd.setLayout(self._labeled("Draw Dist", self._dd, label_w=58))
@@ -1095,6 +1130,40 @@ class ObjectIdeIpl(BuildMixin, QtWidgets.QWidget):
         bl.addWidget(self._conflict)
         self.on_selection(None)
 
+    def _commit_txd(self):
+        if self._txd.isModified() and self._txd_target is not None:
+            _sel().put_field([self._txd_target], 'txd_name', self._txd.text().strip())
+            self._txd.setModified(False)
+
+    def _pick_lod(self):
+        node = _sel().pick_node('Pick a LOD mesh')
+        if node is not None and node != self._obj:
+            self._set_lod(node)
+
+    def _set_lod(self, node):
+        if self._obj is None:
+            return
+        _sel().put_field([self._obj], 'lod_object', int(node.inode.handle) if node is not None else 0)
+        self._partner_node = node
+        self._refresh_lod()
+        self._w_ld.setVisible(node is not None)
+
+    def _write_lod_id(self, value):
+        if self._partner_node is not None:
+            _sel().put_field([self._partner_node], 'model_id', int(value))
+
+    def _refresh_lod(self):
+        node = self._partner_node
+        self._partner_label.setText(str(node.name) if node is not None else '—')
+        self._w_lod_id.setVisible(node is not None)
+        self._lod_id.blockSignals(True)
+        self._lod_id.setValue(_sel().get_prop(node, 'model_id', 0) if node is not None else 0)
+        self._lod_id.blockSignals(False)
+        mid = _sel().get_prop(self._obj, 'lod_ide_id', 0) if self._obj is not None else 0
+        name = _sel().get_field(self._obj, 'lod_ide_name', '') if self._obj is not None else ''
+        self._lod_from_ide.setText('LOD from IDE: %s (ID %d)' % (name, mid) if mid else '')
+        self._lod_from_ide.setVisible(getattr(self, '_active_type', '') == 'DFF' and node is None and mid > 0)
+
     def _sync_flags_box(self):
         self._flags_box.box.setVisible(self._ex_flags.is_open())
 
@@ -1120,13 +1189,16 @@ class ObjectIdeIpl(BuildMixin, QtWidgets.QWidget):
         if self._obj is None:
             return
         try:
-            _sel().set_prop([self._obj], key, value)
+            _sel().put_field([self._obj], key, value)
+            if key == 'lod_draw_distance' and self._partner_node is not None:
+                _sel().put_field([self._partner_node], key, value)
         except Exception as e:                         # noqa: BLE001
             print("[INU] write %s: %r" % (key, e))
         if key == 'model_id':
             self._update_conflict()
 
     def on_selection(self, snap):
+        self._commit_txd()
         obj = snap.get('active') if snap else None
         self._obj = obj
         self._hint.setVisible(obj is None)
@@ -1135,6 +1207,14 @@ class ObjectIdeIpl(BuildMixin, QtWidgets.QWidget):
             self.flags.load(None)
             return
         typ = snap.get('active_type', 'DFF')
+        self._active_type = typ
+        self._txd_target = obj
+        self._txd.setText(_sel().get_field(obj, 'txd_name', ''))
+        self._txd.setModified(False)
+        self._w_txd.setVisible(typ != 'COL')
+        self._partner_node = _sel().node_by_handle(_sel().get_prop(obj, 'lod_object', 0)) if typ == 'DFF' else None
+        self._w_partner.setVisible(typ == 'DFF')
+        self._refresh_lod()
         sel = _sel()
         vals = {k: sel.get_prop(obj, k, d) for k, d in OBJ_DEFAULTS.items()}
         for w, k in ((self._id, 'model_id'), (self._dd, 'draw_distance'),
@@ -1149,8 +1229,10 @@ class ObjectIdeIpl(BuildMixin, QtWidgets.QWidget):
         self._col_info.setVisible(typ == 'COL')
         self._w_id.setVisible(typ != 'COL')
         self._w_dd.setVisible(typ != 'LOD')
-        self._w_ld.setVisible(typ == 'LOD')
+        self._w_ld.setVisible(typ == 'LOD' or typ == 'DFF' and self._partner_node is not None)
         n = snap.get('n', 0)
+        self._clear_id.setText('Clear selected IDs (%d)' % n if n > 1 else 'Clear ID')
+        self._clear_id.setVisible(typ != 'COL')
         self._apply.setVisible(n > 1)
         self._apply.setText("Apply to selected (%d)" % n)
         self.flags.load(obj)
@@ -1356,7 +1438,7 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
             if ip.create(name.text().strip(), src):
                 # имя файла — «очищенное» (в INU ставилось сырое, и выбор
                 # пресета тихо не переключался)
-                self._set_active(ip.sanitize(name.text()))
+                self._set_active(ip.preset_name(name.text()))
             else:
                 QtWidgets.QMessageBox.warning(
                     self, "INU Tools", "Preset already exists or could not be created")
@@ -1369,7 +1451,7 @@ class IdManager(BuildMixin, QtWidgets.QWidget):
                                                  "New name", text=cur)
         if ok and new.strip():
             if ip.rename(cur, new.strip()):
-                self._set_active(ip.sanitize(new))
+                self._set_active(ip.preset_name(new))
                 self._fill_presets()
             else:
                 QtWidgets.QMessageBox.warning(

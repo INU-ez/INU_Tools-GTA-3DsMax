@@ -445,6 +445,8 @@ def selected_meshes():
     rt = _rt()
     ok, other = [], []
     for o in rt.selection:
+        if get_field(o, 'preview', False) or get_field(o, 'section', '') or str(rt.classOf(o)) == 'TargetObject':
+            continue
         try:
             if rt.superClassOf(o) != rt.GeometryClass:
                 continue
@@ -651,6 +653,8 @@ def occlusion_begin():
     rt = _rt()
     nodes = []
     for o in rt.geometry:
+        if get_field(o, 'preview', False) or get_field(o, 'section', '') or str(rt.classOf(o)) == 'TargetObject':
+            continue
         try:
             if not o.isHiddenInVpt:
                 nodes.append(o)

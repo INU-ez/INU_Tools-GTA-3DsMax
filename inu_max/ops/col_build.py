@@ -39,18 +39,16 @@ def light_byte(day, night):
 
 
 def clamp_light(value):
-    """Готовый байт света (у сфер и боксов — user property col_light):
-    день и ночь по отдельности в 0..15."""
-    v = max(0, int(value))
-    return light_byte(v & 0xF, v >> 4)
+    """u8; день/ночь в четвёртом байте верны только для COL1 в SA."""
+    return max(0, min(255, int(value)))
 
 
 def surface_of(props):
     """(material, flags, brightness, light) из GTA-свойств материала:
     свет — день в младшем полубайте, ночь в старшем (каждое 0..15)."""
     p = props or {}
-    return (int(p.get('col_mat_index', 0)), int(p.get('col_flags', 0)),
-            int(p.get('col_brightness', 0)),
+    return (clamp_light(p.get('col_mat_index', 0)), clamp_light(p.get('col_flags', 0)),
+            clamp_light(p.get('col_brightness', 0)),
             light_byte(p.get('col_day_light', 0), p.get('col_night_light', 0)))
 
 
@@ -109,7 +107,12 @@ def _add_prim(p, model, auto_light):
     forced = auto_light_byte(auto_light)
     s = Surface(material=p.surface[0], flags=p.surface[1],
                 brightness=p.surface[2],
-                light=p.surface[3] if forced is None else forced)
+                light=p.surface[3])
+    if forced is not None:
+        if model.version >= 2:
+            s.brightness = forced
+        else:
+            s.light = forced
     if p.kind == 'BOX':
         lo = [min(p.bb_min[i], p.bb_max[i]) for i in range(3)]
         hi = [max(p.bb_min[i], p.bb_max[i]) for i in range(3)]

@@ -355,9 +355,12 @@ def materials_and_ids(node, md):
             out.append(MatData())
             continue
         rgba = mat_ad.color(m) or (1.0, 1.0, 1.0, 1.0)
+        gta_props = mat_ad.props(m)
+        if gta_props.get('uv_anim_write') and gta_props.get('uv_anim_mode') == 'KEYFRAME':
+            gta_props['uv_keyframes'] = mat_ad.uv_keyframes(m)
         out.append(MatData(color=tuple(int(round(max(0.0, min(1.0, c)) * 255))
                                        for c in rgba),
-                           texture=mat_ad.texture_stem(m), props=mat_ad.props(m),
+                           texture=mat_ad.texture_stem(m), props=gta_props,
                            name=str(m.name)))
     return out
 
@@ -491,25 +494,27 @@ def col_bounds(o):
     return b if any(b) else None
 
 
-def col_prim_data(o):
+def col_prim_data(o, version=1):
     """ColPrim примитива: сфера — центр (мир) и радиус × наибольший
     масштаб; бокс — мировой габарит. Поверхность — из материала или user
     properties col_material / col_light."""
     from ..ops.col_build import ColPrim, surface_of, clamp_light
     from . import material as mat_ad
     kind = col_prim(o)
-    surf = (int(get_prop(o, 'col_material', 0)), int(get_prop(o, 'col_flags', 0)),
-            int(get_prop(o, 'col_brightness', 0)), clamp_light(get_prop(o, 'col_light', 0)))
+    surf = (clamp_light(get_prop(o, 'col_material', 0)), clamp_light(get_prop(o, 'col_flags', 0)),
+            clamp_light(get_prop(o, 'col_brightness', 0)), clamp_light(get_prop(o, 'col_light', 0)))
     try:
         if o.material is not None and not mat_ad.is_multi(o.material):
             surf = surface_of(mat_ad.props(o.material))
+            if version >= 2:
+                surf = (surf[0], surf[1], surf[3], clamp_light(get_prop(o, 'col_light', 0)))
     except Exception:                                  # noqa: BLE001
         pass
     if kind == 'BOX':
         mn, mx = o.min, o.max
         return ColPrim(kind='BOX', bb_min=(float(mn.x), float(mn.y), float(mn.z)),
                        bb_max=(float(mx.x), float(mx.y), float(mx.z)), surface=surf)
-    s = o.scale
+    s = o.objecttransform.scalepart
     r = float(o.radius) * max(abs(float(s.x)), abs(float(s.y)), abs(float(s.z)))
     return ColPrim(kind='SPHERE', center=world_pos(o), radius=r, surface=surf)
 

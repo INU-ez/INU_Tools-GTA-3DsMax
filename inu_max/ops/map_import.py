@@ -15,7 +15,7 @@
 #   сферами и боксами (в Blender все объекты коллизии ложились в одну точку);
 # - текстуры добираются из ВСЕХ найденных IMG, а не только из основного;
 #   кнопка TXD выключена — модели без текстур;
-# - interior (и 12-я колонка FLA) и масштаб строк III / VC не теряются;
+# - interior и 12-я колонка FLA сохраняются; IPL scale игнорируется как игрой;
 # - повтор модели из сцены — по имени и ID (в Blender только по ID);
 # - строки бинарного IPL: имя модели — из IDE по ID; их lod_index указывает в
 #   другой (текстовый) IPL, поэтому по нему LOD не связывается;
@@ -85,26 +85,9 @@ def _game_imgs(root):
 
 
 def order_archives(paths, root):
-    """Архивы в порядке загрузки игрой: models/gta3.img, models/gta_int.img,
-    IMG из gta.dat — затем остальные по алфавиту. Модель, которая есть в
-    нескольких, берётся из ПЕРВОГО (решение пользователя 2026-09-28: игра
-    внутри архива берёт первую запись — gta-reversed; порядок между
-    архивами по коду не проверен)."""
-    def key(p):
-        return os.path.normcase(os.path.abspath(p))
-    order = []
-    if root and os.path.isdir(root):
-        order = [os.path.join(root, 'models', 'gta3.img'),
-                 os.path.join(root, 'models', 'gta_int.img')]
-        try:
-            from inu_gta_core.gta_dat import find_all_resources
-            order += list(find_all_resources(root).img_paths)
-        except Exception:                              # noqa: BLE001
-            pass
-    rank = {}
-    for i, p in enumerate(order):
-        rank.setdefault(key(p), i)
-    return sorted(paths, key=lambda p: (rank.get(key(p), len(order)), p.lower()))
+    """Use the shared, game-specific archive load order."""
+    from inu_gta_core.gta_dat import order_archives as ordered
+    return ordered(paths, root)
 
 
 def _read_ides(paths, models, source):
@@ -597,7 +580,7 @@ class _Importer:
                 for e in read_directory(p):
                     k = e.name.lower()
                     hit = self.img_index.get(k)
-                    if hit is None:
+                    if hit is None or (not hit[3] and e.size):
                         self.img_index[k] = (p, e.name, e.offset, e.size)
                     elif hit[0] != p and k.endswith('.dff'):
                         multi.add(k)
@@ -610,7 +593,8 @@ class _Importer:
         scene = map_scene.scene_index()
         game_msg = ''
         try:
-            detected = detect_game_from_img(archives[0])
+            from inu_gta_core.gta_dat import dat_game
+            detected = dat_game(settings.get('game_root', '') or '') or detect_game_from_img(archives[0])
         except Exception:                              # noqa: BLE001
             detected = None
         if detected and detected != self.game:
@@ -627,13 +611,16 @@ class _Importer:
 
     def place(self, instances, inst_src, ide_models, ide_source, scene, game_msg='', *,
               title="INU: Import from IMG", skip_existing=True, reuse_scene=True,
-              layer_of=None, noimg_text="no DFF in IMG"):
+              layer_of=None, noimg_text="no DFF in IMG", prof=None):
         """Расстановка строк IPL (общая для вкладки Import и Import Map).
         skip_existing — строки, уже стоящие в сцене (тот же ID, позиция,
         поворот), пропускаются; reuse_scene — модель берётся из сцены вместо
         повторного импорта; layer_of(idx, inst, is_lod) → (слой модели, слой
         коллизии) — иначе Map_DFF / Map_LOD / Map_COL."""
         rt = pymxs.runtime
+        from ..profiler import Profiler
+        if prof is None:
+            prof = Profiler('', enabled=False)
         from inu_gta_core.ipl import lod_instance_indices, is_lod_name, strip_lod_marker
         from ..adapter import map_scene
         from . import map_link as ML
@@ -655,7 +642,6 @@ class _Importer:
 
         n = len(instances)
         lod_refs = lod_instance_indices(instances)
-        with_scale = True             # масштаб строк III / VC; у SA он 1
         models = {}
         inst_node = [None] * n
         imported = skip_lod = skip_placed = skip_noimg = skip_noname = reused = 0
@@ -680,7 +666,7 @@ class _Importer:
                     if is_lod and not self.load_lod:
                         skip_lod += 1
                         continue
-                    rows = ML.inst_rows(inst, with_scale)
+                    rows = ML.inst_rows(inst)
                     q = _unit((inst.rot_x, inst.rot_y, inst.rot_z, inst.rot_w))
                     pos = (inst.pos_x, inst.pos_y, inst.pos_z)
                     hit = find_placed(inst.model_id, pos, q) if skip_existing else None
@@ -706,7 +692,8 @@ class _Importer:
                             reused += 1
                         else:
                             try:
-                                model, emb_col = self.build_model(name, is_lod, ide)
+                                with prof.stage('build model', note=name):
+                                    model, emb_col = self.build_model(name, is_lod, ide)
                             except Exception as e:     # noqa: BLE001
                                 import traceback
                                 traceback.print_exc()
@@ -728,7 +715,7 @@ class _Importer:
                     texts = []
                     tm, mask = [], []
                     for i, node in enumerate(model.nodes):
-                        if model.roots[i]:
+                        if model.meshes[i] or model.roots[i]:
                             tm += rows
                             mask.append(True)
                         elif model.top[i]:
@@ -746,8 +733,9 @@ class _Importer:
                     owner = model.main + 1 if main_props.get('inu_ipl_uuid', '""') != '""' else 0
                     lay, col_lay = (layer_of(idx, inst, is_lod) if layer_of is not None
                                     else (model.layer, 'Map_COL'))
-                    out = map_scene.place(model.nodes, model.placed > 0, tm, mask, texts,
-                                          owner, lay)
+                    with prof.stage('place', note=name):
+                        out = map_scene.place(model.nodes, model.placed > 0, tm, mask, texts,
+                                              owner, lay)
                     model.placed += 1
                     inst_node[idx] = out[model.main] if out else None
                     imported += 1
@@ -757,7 +745,8 @@ class _Importer:
                         col_nodes = list(emb_col)
                         if self.load_col:
                             try:
-                                made = self.build_col(name, strip_lod_marker(name))
+                                with prof.stage('build COL', note=name):
+                                    made = self.build_col(name, strip_lod_marker(name))
                                 if made:
                                     self.n_col += 1
                                 col_nodes += made
@@ -774,7 +763,8 @@ class _Importer:
                             and inst_node[li] is not None:
                         mains.append(main)
                         lods.append(inst_node[li])
-                map_scene.link_lods(mains, lods)
+                with prof.stage('LOD link'):
+                    map_scene.link_lods(mains, lods)
         finally:
             rt.enableSceneRedraw()
             rt.progressEnd()

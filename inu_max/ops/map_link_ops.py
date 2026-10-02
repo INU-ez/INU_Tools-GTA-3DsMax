@@ -47,11 +47,12 @@ def _with_confirm(run, confirm, title, prefix, always=False):
             rm = [w for w in what if w.startswith('remove')]
             if rm:
                 lines.append("%s: %s" % (os.path.basename(path), "; ".join(rm)))
-        if not lines and not probs:
+        if not lines:
             always = False           # удалять нечего — сразу отчёт
     if probs or always:
         shown = probs[:12] + (["… %d more" % (len(probs) - 12)] if len(probs) > 12 else [])
         if always:
+            lines = lines[:12] + (["… %d more" % (len(lines) - 12)] if len(lines) > 12 else [])
             text = (["Rows will be DELETED from the files:"] + lines
                     + ([""] + ["Problems:"] + shown if shown else []))
             question = "Delete these rows?"
@@ -241,10 +242,9 @@ def ide_targets():
     if root and os.path.isdir(root):
         from inu_gta_core.gta_dat import list_ide_files
         raw += list_ide_files(root)
-    if not raw:
-        single = settings.get('ide_path', '') or ''
-        if single:
-            raw.append(single)
+    single = settings.get('ide_path', '') or ''
+    if single:
+        raw.append(single)
     return _dedupe(raw)
 
 
@@ -367,3 +367,28 @@ def link_verify():
              % (present, missing, cleared, zero)]
     level, text = ML.report_text("IPL check", rep)
     return ('WARNING' if (missing or level != 'INFO') else 'INFO'), "\n".join(lines + [text])
+
+
+def auto_find_lod():
+    nodes = _selected()
+    if not nodes:
+        return _no_sel()
+    sc = ML.Scene()
+    lods, definitions = ML.LodIndex(sc), ML.IdeLods()
+    found = missing = in_ide = 0
+    with _undo('INU: Find LOD'):
+        for dff in sc.pick(nodes):
+            if sc.model_type(dff)[0] != 'DFF' or dff.get('lod_object', 0):
+                continue
+            best = lods.by_name(dff)
+            if best is not None:
+                dff.put({'lod_object': best.handle})
+                found += 1
+                continue
+            hit = definitions.find(dff, sc.model_name(dff))
+            if hit is not None and hit[0] != dff.get('model_id', 0):
+                dff.put({'lod_ide_id': hit[0], 'lod_ide_name': hit[1], 'lod_ide_file': hit[2]})
+                in_ide += 1
+            else:
+                missing += 1
+    return 'INFO', 'LODs found: %d, not found: %d · in IDE: %d' % (found, missing, in_ide)

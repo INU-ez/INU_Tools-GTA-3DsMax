@@ -812,7 +812,7 @@ class FxSettings(BuildMixin, QtWidgets.QWidget):
         kl.addLayout(self._keys_rows)
         kl.addWidget(FusedBlock([[_btn(
             "Write curve to effects.fxp",
-            lambda: self._not_yet("Write curve to effects.fxp"),
+            self._write_curve,
             "Write the keyframe buffer back to effects.fxp for the selected curve",
             'export')]], height=BTN_H + 4))
         s.addWidget(self._keys_w)
@@ -959,10 +959,26 @@ class FxSettings(BuildMixin, QtWidgets.QWidget):
             self._key_i = max(0, min(self._key_i, len(self._keys) - 1))
             self._show_keys()
 
-    # — effects.fxp: новый / удалить / сохранить (диалоги; запись — позже) —
-    def _not_yet(self, what):
-        QtWidgets.QMessageBox.information(
-            self, "INU Tools", "%s is not implemented yet." % what)
+    # — effects.fxp: новый / удалить / сохранить (transactional file writes) —
+    def _write_file(self, operation, *args):
+        from ..ops import fx_write
+        try:
+            _level, text = getattr(fx_write, operation)(self._game_root(), *args)
+            print('[INU] ' + text)
+            if self._node is not None and operation in ('create', 'save', 'delete'):
+                name = '' if operation == 'delete' else args[0] if operation == 'create' else args[1]
+                _fx().put([self._node], '2dfx_effect_name', name)
+            if self._node is not None:
+                self._load_particle(_fx().fields(self._node))
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self, 'INU: effects.fxp', str(error))
+
+    def _write_curve(self):
+        node = self._node
+        if node is not None and self._curve:
+            self._write_file('write_curve', _fx().get(node, '2dfx_effect_name', ''),
+                             int(_fx().get(node, 'particle_emitter_index', 0)),
+                             self._curve, list(self._keys))
 
     def _new_effect(self):
         dlg = _NameDialog(self, "INU: New Particle Effect", 340, 'fx_new_name',
@@ -982,7 +998,7 @@ class FxSettings(BuildMixin, QtWidgets.QWidget):
         elif name in names:
             msg = "Effect '%s' already exists" % name
         else:
-            return self._not_yet("Writing effects.fxp")
+            return self._write_file('create', name)
         QtWidgets.QMessageBox.warning(self, "INU Tools", msg)
 
     def _del_effect(self):
@@ -1008,7 +1024,7 @@ class FxSettings(BuildMixin, QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "INU Tools",
                                           "Confirmation not given")
             return
-        self._not_yet("Writing effects.fxp")
+        self._write_file('delete', name)
 
     def _save_effect(self):
         node = self._node
@@ -1023,7 +1039,9 @@ class FxSettings(BuildMixin, QtWidgets.QWidget):
         dlg.form.addWidget(IconLabel("effects.fxp.bak is created on the first "
                                      "save", 'info', wrap=True))
         if dlg.exec():
-            self._not_yet("Writing effects.fxp")
+            self._write_file('save', cur, self._get('fx_save_name', cur),
+                             int(_fx().get(node, 'particle_emitter_index', 0)),
+                             _fx().fields(node), self._get('fx_save_overwrite', True))
 
     # ── PED_ATTRACTOR ──────────────────────────────────────────────────
     def _page_attractor(self, v):

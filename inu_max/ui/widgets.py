@@ -631,18 +631,24 @@ class VecEdit(QtWidgets.QWidget):
         grid.setSpacing(1)
         cols = cols or n
         self._sp = []
+        self._vals = [0.0] * n
         for i in range(n):
             sp = NumEdit(decimals, lo, hi, step)
             sp.setToolTip(((tip + "\n") if tip else "") + labels[i % len(labels)])
-            sp.valueChanged.connect(lambda _v: self.changed.emit(self.values()))
+            sp.valueChanged.connect(lambda v, i=i: self._edited(i, v))
             grid.addWidget(sp, i // cols, i % cols)
             self._sp.append(sp)
 
+    def _edited(self, i, value):
+        self._vals[i] = float(value)
+        self.changed.emit(tuple(self._vals))
+
     def values(self):
-        return tuple(sp.value() for sp in self._sp)
+        return tuple(self._vals)
 
     def set_values(self, vals):
-        for sp, v in zip(self._sp, vals):
+        for i, (sp, v) in enumerate(zip(self._sp, vals)):
+            self._vals[i] = float(v)
             sp.blockSignals(True)
             sp.setValue(float(v))
             sp.blockSignals(False)

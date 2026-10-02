@@ -321,9 +321,8 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
             seg, group = self._seg_buttons(
                 [("Scroll", 'SCROLL', "Constant linear scrolling by Speed U/V"),
                  ("Keyframes", 'KEYFRAME', "Custom animation: keys on the "
-                  "diffuse map coordinates (not implemented in 3ds Max yet — "
-                  "ignored: SA export writes Scroll with Speed U/V, III/VC "
-                  "none)")],
+                  "diffuse map coordinates over the scene animation range "
+                  "(GTA SA)")],
                 'SCROLL', lambda _d: None, "UV animation mode")
             b.add('uv_anim_mode', 'SCROLL', group, self._show_details)
             self._uv_group = group
@@ -341,12 +340,11 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
                 3, 0.01, 1e4, 0.1, "Duration: ", "Duration of the UV animation "
                 "cycle (s)")))
             d.addWidget(self._uv_scroll)
-            # режим ключей в Max ещё не сделан: экспорт SA пишет Scroll
             self._uv_keys = IconLabel(
-                "Keys are not implemented in 3ds Max yet — ignored: SA export "
-                "writes Scroll with the Speed U/V / Duration set in Scroll mode "
-                "(III/VC write no UV animation)",
-                'error', wrap=True, icon_color=_ERR)
+                "Animate U/V Offset, U/V Tiling and W Angle of the diffuse "
+                "bitmap using Max Auto Key. Export samples the scene animation "
+                "range. UV animation requires GTA SA.",
+                'info', wrap=True)
             d.addWidget(self._uv_keys)
 
         effect('export_env_map', "Environment Map",
@@ -358,7 +356,7 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
         effect('export_dual_tex', "Blend Mode (Src/Dst)",
                "Dual Texture / Blend Mode", dual)
         effect('uv_anim_write', "UV Animation",
-               "Embed UV animation into the exported DFF", uv)
+               "Embed UV animation into the exported DFF (SA only — GTA III/VC have no UV animation)", uv)
         v.addWidget(ex)
 
     def _pj_field(self, key, tip):
@@ -599,7 +597,8 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
         if self._mat is None:
             return
         print("[INU] %s" % _safe(lambda: _mat().sa_vehicle_defaults(self._mat), ''))
-        self._set('export_pipeline', '0x53F2009A')     # Vehicle pipeline
+        from ..ops.pipeline_flags import set_pipeline
+        set_pipeline('0x53F2009A')     # Vehicle pipeline
         self._load()
 
     def _validate_paintjobs(self):

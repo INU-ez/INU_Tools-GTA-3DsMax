@@ -8,7 +8,7 @@
 # атрибуты кривой в духе Kam's / ZZPuma.
 
 from .selection import (_rt, _undo, _unquote, get_prop, get_field,
-                        put_field, selected_meshes)
+                        put_field, selected_meshes, put_data, get_data)
 
 WATER_FLAGS = {0: "Default / Invisible", 1: "Default / Visible",
                2: "Shallow / Invisible", 3: "Shallow / Visible"}
@@ -62,16 +62,38 @@ def add_water(size=WATER_BLOCK):
 def set_water_params(flag, sx, sy, sz, wave):
     """«Apply» (water_set_params INU) — выделенным мешам. Возвращает число."""
     meshes = selected_meshes()
+    if any(list(node.modifiers) for node in meshes):
+        raise ValueError('Collapse water modifiers before applying vertex parameters')
     with _undo("INU: Water parameters"):
         for key, v in (('water_flag', int(flag)), ('water_speed_x', float(sx)),
                        ('water_speed_y', float(sy)), ('water_speed_z', float(sz)),
                        ('water_wave_height', float(wave))):
             put_field(meshes, key, v)
+        import json
+        rt = _rt()
+        for node in meshes:
+            if list(node.modifiers):
+                raise ValueError('Collapse water modifiers before applying vertex parameters')
+            rt.convertToPoly(node)
+            count = int(rt.polyop.getNumVerts(node.baseObject))
+            old = get_data(node, 'water_vertices', [])
+            if len(old) != count:
+                old = [{} for _ in range(count)]
+            selected = list(rt.polyop.getVertSelection(node.baseObject)) if int(rt.subObjectLevel) == 1 else []
+            targets = [int(i) - 1 for i in selected] if selected else range(count)
+            for i in targets:
+                old[i].update(speed_x=float(sx), speed_y=float(sy), speed_z=float(sz), wave_height=float(wave))
+            put_data([node], 'water_vertices', old)
+            put_field([node], 'water_active', True)
+            put_field([node], 'type', 'NON')
+            put_field([node], 'section', 'water')
     return len(meshes)
 
 
 def water_flag(o):
     """Флаг водного меша или None, если объект — не вода."""
+    if not get_field(o, 'water_active', True):
+        return None
     v = get_prop(o, 'water_flag', None)
     try:
         return None if v is None else int(v)

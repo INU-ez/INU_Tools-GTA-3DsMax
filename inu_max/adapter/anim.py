@@ -19,7 +19,7 @@ import json
 import os
 
 from .selection import (_rt, _undo, get_prop, node_kind, hierarchy,
-                        selected_meshes, active_node)
+                        selected_meshes, active_node, get_field)
 
 # ── скелет ───────────────────────────────────────────────────────────
 
@@ -103,6 +103,12 @@ def handsign_status():
             if r not in out:
                 out.append(r)
         return out
+    from .selection import get_data
+    attached = {get_data(o, 'handsign_parent', {}).get('side'): o
+                for o in _rt().objects if get_data(o, 'handsign_parent', None)}
+    if attached:
+        hand = next(iter(attached.values()))
+        return _top(hand), attached.get('L'), attached.get('R')
     l01, r01 = roots('L Hand01'), roots('R Hand01')
     lh = l01[-1] if l01 else None
     rh = next((r for r in reversed(r01) if r not in l01), None)
@@ -217,11 +223,11 @@ def node_tag(o):
 
 def anim_name(pivot):
     """Имя анимации pivot'а (в INU — имя его Action)."""
-    return get_prop(pivot, 'anim_name', '') or str(pivot.name)
+    return get_field(pivot, 'anim_name', '') or str(pivot.name)
 
 
 def pivot_settings(pivot):
-    return {k: get_prop(pivot, k, d) for k, d in PIVOT_DEFAULTS.items()}
+    return {k: get_field(pivot, k, d) for k, d in PIVOT_DEFAULTS.items()}
 
 
 def parent_selected(to):

@@ -123,14 +123,9 @@ def quat_rows(x, y, z, w):
             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
 
 
-def inst_rows(inst, with_scale=False):
-    """12 чисел матрицы Max (3 строки поворота + позиция) строки IPL.
-    with_scale — масштаб строки (III / VC; в SA его нет)."""
+def inst_rows(inst):
+    """Game placement matrix: rotation and position; IPL scale is ignored."""
     rows = quat_rows(inst.rot_x, inst.rot_y, inst.rot_z, inst.rot_w)
-    if with_scale:
-        for r, s in zip(rows, (inst.scale_x, inst.scale_y, inst.scale_z)):
-            for k in range(3):
-                r[k] *= float(s)
     return [c for r in rows for c in r] + [float(inst.pos_x), float(inst.pos_y),
                                            float(inst.pos_z)]
 
@@ -155,6 +150,8 @@ ROT_EPS = 1e-5
 
 # Сообщения ядра (шаблоны mapsync по-русски, как в INU) → англ. из locale/eng.py.
 _EN = {
+    "«{0}»: у строки нет LOD — отвязывать нечего":
+        "«{0}»: the row has no LOD — nothing to detach",
     "«{0}»: строка в файле была изменена вручную — найдена рядом и обновлена":
         "«{0}»: the row was edited by hand — found nearby and updated",
     "«{0}»: прежняя строка в файле не найдена (удалена или правилась вручную) — "
@@ -315,36 +312,57 @@ class Scene:
         return hit
 
     def model_name(self, r):
-        """Имя модели в IDE / IPL: базовое имя; хвост Max «001» снимается,
-        только если без него это имя, под которым узел уже записан."""
+        """Game model name of a placement, preserving a valid import stamp."""
+        from inu_gta_core.mapsync import game_model_name
         base = self.model_type(r)[1]
         m = _DUP_TAIL.match(base)
         if m:
             known = {r.get('ipl_last_name', '').lower(), r.get('ide_last_name', '').lower()}
             if m.group(1).lower() in known - {''}:
                 base = m.group(1)
+        main = self.main_of(r)
+        peers = self._groups.get(r.handle, (r, [r]))[1] if self._groups else [r]
+        if len(peers) > 1 or game_model_name(base) != base:
+            mid = main.get('model_id', 0)
+            for prefix in ('ipl', 'ide'):
+                stamp = main.get(prefix + '_last_name', '')
+                if stamp and mid > 0 and main.get(prefix + '_last_model_id', 0) == mid:
+                    return stamp
+            return game_model_name(self.model_type(main)[1])
         return base
 
+    def _placements(self):
+        from inu_gta_core.mapsync import group_instances, is_damage_part
+        items = []
+        for o in self.recs:
+            if o.get('model_id', 0) > 0 and self.model_type(o)[0] == 'DFF':
+                pos, quat, _scale = self.LS.world(o.node)
+                items.append((o.handle, o.get('model_id', 0), pos, quat))
+        self._groups = {}
+        def rank(o):
+            return (is_damage_part(o.name), o.get('atomic_order', 1 << 30),
+                    o.name.casefold(), o.handle)
+        for handles in group_instances(items):
+            peers = [self.by_handle[h] for h in handles]
+            linked = [o for o in peers if o.get('ipl_uuid', '')]
+            originals = [o for o in linked if not self.is_copy(o)]
+            head = min(originals or linked or peers, key=rank)
+            original_handles = {o.handle for o in originals}
+            for o in peers:
+                self._groups[o.handle] = (o if o.handle in original_handles else head, peers)
+
     def main_of(self, r):
-        """Главный меш модели для под-меша (несколько мешей с одним Model ID
-        под одним корнем — одна расстановка)."""
-        mid = r.get('model_id', 0)
-        if mid <= 0:
+        """Meshes with the same ID and placement form one model, regardless of parent."""
+        if r.get('model_id', 0) <= 0 or self.model_type(r)[0] != 'DFF':
             return r
         if self._groups is None:
-            self._groups = {}
-            for o in self.recs:
-                m = o.get('model_id', 0)
-                if m > 0 and not self.is_col(o):
-                    self._groups.setdefault((o.top, m), []).append(o)
-        group = self._groups.get((r.top, mid), ())
-        if len(group) <= 1:
-            return r
-        top = self.by_handle.get(r.top)
-        if top is not None and top in group:
-            return top
-        linked = [g for g in group if g.get('ipl_uuid', '')]
-        return min(linked or group, key=lambda g: (g.depth, g.handle))
+            self._placements()
+        return self._groups.get(r.handle, (r, [r]))[0]
+
+    def followers(self, r):
+        self.main_of(r)
+        peers = self._groups.get(r.handle, (r, [r]))[1] if self._groups else [r]
+        return [o for o in peers if self.main_of(o) is r]
 
     def pick(self, nodes):
         """Выделение → модели (главные меши, без повторов, без коллизии)."""
@@ -367,6 +385,7 @@ class Scene:
     # — копии (Shift-клон переносит user props вместе с ipl_uuid) —
     def reset_copies(self):
         self._holders = None
+        self._groups = None
 
     def is_copy(self, r):
         u = r.get('ipl_uuid', '')
@@ -459,24 +478,24 @@ def _snap(pos, q, anchor):
 
 def ipl_entry(sc, r):
     """Строка IPL из узла (_ipl_entry_from_obj INU): мировая позиция,
-    поворот (rotationpart = кватернион IPL), масштаб (для VC / III)."""
+    поворот (rotationpart = кватернион IPL)."""
     from inu_gta_core.ipl import IplInstance
-    pos, q, s = sc.LS.world(r.node)
+    pos, q, _scale = sc.LS.world(r.node)
     pos, q = _snap(pos, _unit(q), ipl_anchor(r))
-    s = tuple(1.0 if abs(c - 1.0) < 1e-4 else c for c in s)
     return IplInstance(
         model_id=r.get('model_id', 0), model_name=sc.model_name(r),
         interior=r.get('interior_id', 0),
         pos_x=pos[0], pos_y=pos[1], pos_z=pos[2],
         rot_x=q[0], rot_y=q[1], rot_z=q[2], rot_w=q[3],
-        lod_index=r.get('lod_index', -1), real_interior=r.get('real_interior', 0),
-        scale_x=s[0], scale_y=s[1], scale_z=s[2])
+        lod_index=r.get('lod_index', -1), real_interior=r.get('real_interior', 0))
 
 
-def apply_inst(r, inst, with_scale):
+def apply_inst(r, inst, sc=None):
     """Узел → мировая матрица строки (Restore coords / Sync)."""
     from ..adapter import link_scene as LS
-    LS.set_world(r.node, inst_rows(inst, with_scale))
+    nodes = sc.followers(r) if sc is not None else [r]
+    for part in nodes:
+        LS.set_world(part.node, inst_rows(inst))
 
 
 def file_game(doc, default):
@@ -500,6 +519,9 @@ class LodIndex:
         from inu_gta_core.ipl import strip_lod_marker
         self.sc = sc
         self.by_base = {}
+        self.by_tail = {}
+        from .. import settings
+        self.game = settings.get('game', 'SA')
         for r in sc.recs:
             if sc.is_col(r):
                 continue
@@ -509,6 +531,10 @@ class LodIndex:
             mt, base = sc.model_type(r)
             if mt != 'LOD' or not base:
                 continue
+            if self.game in ('III', 'VC'):
+                for name in {lod_model_name(r, base, game=self.game, sc=sc), _plain_lod_name(r)}:
+                    if name.lower().startswith('lod') and len(name) > 3:
+                        self.by_tail.setdefault(name[3:], []).append((name, r))
             low = base.lower()
             keys = {low, strip_lod_marker(base).lower()}
             if low.startswith('lod'):
@@ -523,12 +549,38 @@ class LodIndex:
             r = self.sc.by_handle.get(h)
             if r is not None and r is not dff:
                 return r
+        return self.by_name(dff)
+
+    def by_name(self, dff):
         base = self.sc.model_type(dff)[1]
         cands = [c for c in self.by_base.get((base or '').lower(), []) if c is not dff]
+        if not cands:
+            cands = self.tail_partners(dff, self.sc.model_name(dff))
         if not cands:
             return None
         # без суффикса Max «001» — первым
         return min(cands, key=lambda o: (bool(_DUP_TAIL.match(o.name)), o.handle))
+
+    def tail_partners(self, dff, name):
+        from inu_gta_core.ipl import lod_owner_by_tail
+        from inu_gta_core.mapsync import pos_close, rot_close
+        hits = self.by_tail.get(name[3:], ()) if len(name) > 3 else ()
+        if not hits:
+            return []
+        models = [(r.get('model_id', 0), self.sc.model_name(r)) for r in self.sc.recs
+                  if self.sc.model_type(r)[0] == 'DFF']
+        lp = []
+        dp, dq, _ = self.sc.LS.world(dff.node)
+        spots = [(dp, dq)]
+        if dff.get('ipl_uuid', ''):
+            spots.append((dff.get('ipl_last_pos', dp), dff.get('ipl_last_rot', dq)))
+        for nm, r in hits:
+            if lod_owner_by_tail(nm, models) != name:
+                continue
+            p, q, _ = self.sc.LS.world(r.node)
+            if any(pos_close(p, pos, .01) and rot_close(q, quat, 1e-4) for pos, quat in spots):
+                lp.append(r)
+        return list({r.handle: r for r in lp}.values())
 
     def owners(self, lod, dffs):
         return [d for d in dffs if self.partner(d) is lod]
@@ -547,6 +599,7 @@ class IdeLods:
             if p and p not in self.common and os.path.isfile(p):
                 self.common.append(p)
         self._by_file = {}
+        self._model_rows = {}
 
     def _index(self, path):
         if path not in self._by_file:
@@ -557,11 +610,13 @@ class IdeLods:
                 doc = IdeDoc.load(path)
             except OSError:
                 doc = None
+            self._model_rows[path] = [(int(row.model_id), row.name) for row in (doc.rows if doc else ())
+                                      if row.section in ('objs', 'tobj') and not is_lod_name(row.name)]
             for row in (doc.rows if doc else ()):
                 if row.section not in ('objs', 'tobj') or not is_lod_name(row.name):
                     continue
                 low = row.name.lower()
-                bases = {strip_lod_marker(row.name).lower()}
+                bases = {strip_lod_marker(row.name).lower(), '~' + row.name[3:]}
                 if low.startswith('lod'):
                     bases.add(low[3:].lstrip('_-'))
                 for b in bases:
@@ -576,22 +631,152 @@ class IdeLods:
             files.append(own)
         files += [p for p in self.common if p not in files]
         did = dff.get('model_id', 0)
+        from .. import settings
+        from inu_gta_core.ipl import lod_owner_by_tail
+        game = settings.get('game', 'SA')
+        for path in files:
+            self._index(path)
+        all_models = [row for path in files for row in self._model_rows.get(path, ())]
         for path in files:
             cands = self._index(path).get((base or '').lower())
+            if not cands and game in ('III', 'VC') and len(base) > 3:
+                models = self._model_rows.get(path, ()) if game == 'VC' else all_models
+                cands = [c for c in self._index(path).get('~' + base[3:], ())
+                         if lod_owner_by_tail(c[1], models) == base]
             if cands:
                 best = min(cands, key=lambda c: (c[0] != did + 1, c[0]))
                 return best[0], best[1], path
         return None
 
 
-def lod_model_name(lod, base):
-    """Имя LOD-модели: с которым он импортирован / записан, иначе LOD<база>
-    (база, уже похожая на LOD-имя, — как есть)."""
-    from inu_gta_core.ipl import is_lod_name
-    nm = (lod.get('ide_last_name', '') or '').strip()
-    if nm and is_lod_name(nm):
-        return nm
-    return base if is_lod_name(base) else "LOD" + base
+_IDE_NAMES = {}
+
+
+def _ide_names(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}, {}
+    stamp = st.st_mtime_ns, st.st_size
+    hit = _IDE_NAMES.get(norm(path))
+    if hit is None or hit[0] != stamp:
+        from inu_gta_core.mapsync import IdeDoc
+        by_name, by_tail = {}, {}
+        try:
+            rows = IdeDoc.load(path).rows
+        except (OSError, ValueError):
+            rows = []
+        for row in rows:
+            if row.section not in ('objs', 'tobj'):
+                continue
+            pair = (int(row.model_id), row.name)
+            by_name.setdefault(row.name.casefold(), []).append(pair)
+            if len(row.name) > 3:
+                by_tail.setdefault(row.name[3:], []).append(pair)
+        hit = _IDE_NAMES[norm(path)] = (stamp, by_name, by_tail)
+    return hit[1], hit[2]
+
+
+def _known_ides(recs, game):
+    from .. import settings
+    from inu_gta_core.gta_dat import dat_game, game_ide_paths
+    paths = [ide_linked_file(r) for r in recs]
+    paths += [settings.get('ide_path', '')] + list(settings.get('ide_sync_list', []) or [])
+    root = settings.get('game_root', '') or ''
+    if root and dat_game(root) == game:
+        paths += game_ide_paths(root)[0]
+    return list(dict.fromkeys(norm(p) for p in paths if p and os.path.isfile(p)))
+
+
+def _plain_lod_name(lod):
+    name = _DUP_MARK.sub(r'\1', lod.name)
+    name = re.sub(r'_(?:DFF|LOD)$', '', name, flags=re.I)
+    stamp = lod.get('ide_last_name', '')
+    if _DUP_TAIL.match(name) and _DUP_TAIL.match(name).group(1).casefold() == stamp.casefold():
+        name = _DUP_TAIL.match(name).group(1)
+    return name
+
+
+def lod_name_taken(name, hd, lod=None, game=None, sc=None):
+    from .. import settings
+    from inu_gta_core.ipl import lod_owner_by_tail
+    game = game or settings.get('game', 'SA')
+    if game not in ('III', 'VC') or len(hd) <= 3:
+        return ''
+    sc = sc or Scene()
+    peers, linked = {hd.casefold(): (0, hd)}, [lod] if lod is not None else []
+    me = _plain_lod_name(lod).casefold() if lod is not None else ''
+    for r in sc.recs:
+        if sc.is_col(r):
+            continue
+        plain = _plain_lod_name(r)
+        if me and plain.casefold() == me:
+            continue
+        if name.casefold() in (plain.casefold(), r.get('ide_last_name', '').casefold()):
+            return r.name
+        if sc.model_type(r)[0] != 'DFF':
+            continue
+        base = sc.model_name(r)
+        if base[3:].casefold() != hd[3:].casefold():
+            continue
+        mid = int(r.get('model_id', 0))
+        old = peers.get(base.casefold())
+        if old is None or (mid > 0 and (old[0] <= 0 or mid < old[0])):
+            peers[base.casefold()] = (mid, base)
+        if base.casefold() == hd.casefold():
+            linked.append(r)
+    first = min(peers.values(), key=lambda v: (v[0] <= 0, v[0], v[1].casefold()))
+    if first[1].casefold() != hd.casefold():
+        return first[1]
+    hid = peers[hd.casefold()][0]
+    lid = lod.get('model_id', 0) if lod is not None else 0
+    lid = lid or (hid + 1 if hid > 0 else 0)
+    for path in _known_ides(linked, game):
+        by_name, by_tail = _ide_names(path)
+        for mid, nm in by_name.get(name.casefold(), ()):
+            if mid != lid:
+                return '%s, %s' % (nm, _base(path))
+        if game == 'VC' and hd.casefold() not in by_name:
+            continue
+        candidates = [v for v in by_tail.get(hd[3:], ()) if v[1].casefold() != name.casefold()]
+        owner = lod_owner_by_tail(name, candidates + [(hid, hd)])
+        if owner is not None and owner.casefold() != hd.casefold():
+            return '%s, %s' % (owner, _base(path))
+    return ''
+
+
+def lod_model_name(lod, base, hd='', game=None, sc=None):
+    from .. import settings
+    from inu_gta_core.ipl import lod_name_for
+    game = game or settings.get('game', 'SA')
+    fallback = base[3:] if base.lower().startswith('lod') else base
+    return lod_name_for(_plain_lod_name(lod), lod.get('ide_last_name', ''), hd, fallback, game,
+                        taken=lambda n: lod_name_taken(n, hd, lod, game, sc))
+
+
+def new_lod_name(hd, base, game=None, sc=None):
+    from .. import settings
+    from inu_gta_core.ipl import lod_name_for
+    game = game or settings.get('game', 'SA')
+    return lod_name_for('', '', hd, base, game,
+                        taken=lambda n: lod_name_taken(n, hd, None, game, sc))
+
+
+def lod_name_note(lod, name, hd, game=None, sc=None):
+    from .. import settings
+    from inu_gta_core.ipl import default_lod_name, lod_pairs_by_name
+    game = game or settings.get('game', 'SA')
+    if game not in ('III', 'VC') or not hd:
+        return ''
+    if len(hd) <= 3:
+        return '«%s»: name shorter than 4 characters — the game cannot pair its LOD' % hd
+    if lod_pairs_by_name(name, hd):
+        return ''
+    wanted = default_lod_name(hd, game)
+    who = lod_name_taken(wanted, hd, lod, game, sc)
+    if who:
+        return '«%s»: LOD name %s is taken (%s); %s will not pair — rename the model' % (hd, wanted, who, name)
+    return '«%s»: LOD %s will not pair in III/VC — expected %s' % (hd, name, wanted)
 
 
 def lod_model_id(lod, dff):
@@ -612,7 +797,7 @@ def lod_inst_for(sc, dff, lod, base):
     import copy as _copy
     d = ipl_entry(sc, dff)
     e = _copy.copy(d)
-    e.model_name = lod_model_name(lod, sc.model_type(lod)[1] or base)
+    e.model_name = lod_model_name(lod, sc.model_type(lod)[1] or base, hd=sc.model_name(dff), sc=sc)
     e.model_id = lod_model_id(lod, dff)
     e.lod_index = -1
     return e
@@ -668,15 +853,31 @@ def ipl_expand(sc, recs):
 
 
 def _scale_note(sc, d, game, rep):
-    if game != 'SA':
-        return
     s = sc.LS.world(d.node)[2]
     if any(abs(c - 1.0) > 1e-4 for c in s):
-        rep.msg('WARNING', "«%s»: scaled — a SA IPL row has no scale (written without it)"
+        rep.msg('WARNING', "«%s»: scaled — the game does not apply IPL scale (row keeps its own; new rows get 1)"
                 % d.name)
 
 
 # ── IPL: запись ──────────────────────────────────────────────────────
+
+def _lod_row_apart(doc, anchor, inst, lod_id):
+    from inu_gta_core.mapsync import pos_close, rot_close
+    ref = inst
+    if anchor is not None:
+        index = doc.find(anchor)
+        if index >= 0:
+            ref = doc.rows[index].inst
+    rows = [row.inst for row in doc.rows if row.inst.model_id == lod_id]
+    if not rows:
+        return False
+    def at(row):
+        return pos_close((row.pos_x, row.pos_y, row.pos_z),
+                         (ref.pos_x, ref.pos_y, ref.pos_z), .01) and rot_close(
+            (row.rot_x, row.rot_y, row.rot_z, row.rot_w),
+            (ref.rot_x, ref.rot_y, ref.rot_z, ref.rot_w), 1e-4)
+    return not any(at(row) for row in rows)
+
 
 def ipl_write(sc, recs, *, picked='', game='SA', dry_run=False):
     """Add / обновить расстановки моделей (+ их LOD). picked — IPL бокса:
@@ -777,6 +978,9 @@ def ipl_write(sc, recs, *, picked='', game='SA', dry_run=False):
                     lod.model_id, lod.model_name, lod.lod_index = hit[0], hit[1], -1
                     if _lod_is_model(lod, dinst):
                         lod = None
+                    elif fgame in ('III', 'VC') and _lod_row_apart(doc, anchor, dinst, hit[0]):
+                        rep.msg('INFO', '«%s»: existing LOD stands apart — IPL row kept' % d.name)
+                        lod = None
                     else:
                         rep.msg('INFO', "«%s»: LOD taken from IDE — %s (ID %d, %s)"
                                 % (d.name, hit[1], hit[0], _base(hit[2])))
@@ -827,6 +1031,34 @@ def ipl_write(sc, recs, *, picked='', game='SA', dry_run=False):
 
 # ── IPL: удаление ────────────────────────────────────────────────────
 
+def _lod_owner_at(sc, lod, dffs, tol):
+    """III/VC: explicit owner, else one nearest placement within tol.
+
+    Names also pair by the game tail after the first three characters.
+    Earlier candidates win ties; selected placements precede linked ones.
+    """
+    base = (sc.model_type(lod)[1] or '').lower()
+    lname = (lod.get('ide_last_name', '') or base).lower()
+    pos = sc.LS.world(lod.node)[0]
+    best, best_d = None, tol * tol
+    for d in dffs:
+        explicit = d.get('lod_object', 0)
+        if explicit == lod.handle:
+            return d
+        name = (d.get('ide_last_name', '') or sc.model_type(d)[1] or '').lower()
+        tail_pair = len(name) > 3 and len(lname) > 3 and name[3:] == lname[3:]
+        if explicit or (name != base and not tail_pair):
+            continue
+        spots = [sc.LS.world(d.node)[0]]
+        if d.get('ipl_uuid', ''):
+            spots.append(d.get('ipl_last_pos', (0.0, 0.0, 0.0)))
+        for spot in spots:
+            dist = sum((a - b) ** 2 for a, b in zip(spot, pos))
+            if dist < best_d or (best is None and dist == best_d):
+                best, best_d = d, dist
+    return best
+
+
 def ipl_remove(sc, recs, *, picked='', target='', game='SA', dry_run=False):
     """Удалить расстановки (их LOD — если больше не нужны). Файл: target,
     иначе свой IPL модели, иначе picked. LOD без модели — отвязывается."""
@@ -858,12 +1090,24 @@ def ipl_remove(sc, recs, *, picked='', target='', game='SA', dry_run=False):
                   if sc.model_type(o)[0] == 'DFF' and not sc.is_copy(o)]
         sel = {d.handle for d in dffs}
         for lod in lods:
-            for d in lodix.owners(lod, linked):
+            if game in ('III', 'VC'):
+                owner = _lod_owner_at(sc, lod, dffs + linked, MATCH_TOL)
+                owners = [owner] if owner is not None else []
+            elif any(lodix.partner(d) is lod for d in dffs):
+                continue
+            else:
+                owners = lodix.owners(lod, linked)
+            if not owners:
+                rep.msg('WARNING', "«%s»: LOD without a main model — select the main model"
+                        % lod.name)
+            for d in owners:
                 if d.handle in sel:
                     continue
                 path = target or ipl_linked_file(d)
                 if path and os.path.isfile(path):
                     groups.setdefault(path, []).append((d, ipl_anchor(d), None, 'lod'))
+                else:
+                    rep.msg('WARNING', "«%s»: no IPL file" % d.name)
 
     for path, items in groups.items():
         doc = _load_ipl(path, rep)
@@ -879,11 +1123,17 @@ def ipl_remove(sc, recs, *, picked='', target='', game='SA', dry_run=False):
                 results.append((obj, kind, ed.remove(obj, anchor)))
             else:
                 results.append((obj, kind, ed.remove(obj, anchor, tol=tol)))
-        n_rm = sum(1 for _o, k, r in results if k == 'dff' and r.removed)
-        if n_rm:
-            rep.plan(path, 'remove %d placement(s)' % n_rm)
         if not _commit(ed, path, rep, dry_run):
             continue
+        n_rm = sum(1 for _o, k, r in results if k == 'dff' and r.removed)
+        n_link = sum(1 for _o, k, r in results if k == 'lod' and r._row is not None)
+        n_lod = sum(int(r.lod_removed or 0) for _o, _k, r in results)
+        if n_rm:
+            rep.plan(path, 'remove %d placement(s)' % n_rm)
+        if n_link:
+            rep.plan(path, 'remove LOD link of %d placement(s)' % n_link)
+        if n_lod:
+            rep.plan(path, 'remove %d LOD row(s)' % n_lod)
         for obj, kind, r in results:
             if kind == 'dff' and r.removed:
                 rep.add('removed')
@@ -944,6 +1194,7 @@ def ipl_pull(sc, recs, files, *, move=True, far=None, clear_lost=False):
     claimed = {}
     objs = [r for r in recs if sc.model_type(r)[0] == 'DFF']
     unlinked = []
+    kept_files = {}
     for r in objs:
         if not r.get('ipl_uuid', '') or sc.is_copy(r):
             unlinked.append(r)
@@ -953,9 +1204,8 @@ def ipl_pull(sc, recs, files, *, move=True, far=None, clear_lost=False):
         if i < 0 or doc is None:
             rep.add('lost')
             if clear_lost:
-                if path and not os.path.isfile(path):
-                    rep.msg('WARNING', "«%s»: its IPL %s is missing — link kept"
-                            % (r.name, _base(path)))
+                if doc is None:
+                    kept_files[path] = kept_files.get(path, 0) + 1
                     continue
                 clear_ipl(r)
                 rep.msg('WARNING', "«%s»: its row is not in %s (nor within %g m) — link removed"
@@ -965,7 +1215,7 @@ def ipl_pull(sc, recs, files, *, move=True, far=None, clear_lost=False):
             continue
         inst = doc.rows[i].inst
         if move:
-            apply_inst(r, inst, doc.rows[i].style != 'SA')
+            apply_inst(r, inst, sc=sc)
         stamp_ipl(r, path, inst, inst.lod_index)
         rep.add('synced')
     in_objs = {r.handle for r in objs}
@@ -1011,9 +1261,12 @@ def ipl_pull(sc, recs, files, *, move=True, far=None, clear_lost=False):
         fresh = sc.is_copy(r)
         inst = doc.rows[i].inst
         if move:
-            apply_inst(r, inst, doc.rows[i].style != 'SA')
+            apply_inst(r, inst, sc=sc)
         stamp_ipl(r, path, inst, inst.lod_index, fresh=fresh)
         rep.add('linked')
+    for path, count in kept_files.items():
+        rep.msg('WARNING', '%s: file missing or unreadable — links of %d models kept' %
+                (_base(path), count))
     sc.reset_copies()
     return rep
 
@@ -1095,7 +1348,7 @@ def ide_entry(sc, r, dff=None):
     e = IdeObject(model_id=r.get('model_id', 0), model_name=name, txd_name=txd,
                   draw_distance=dd, flags=r.get('ide_flags', 0))
     if mt == 'LOD':
-        e.model_name = lod_model_name(r, base)
+        e.model_name = lod_model_name(r, base, hd=sc.model_name(dff) if dff is not None else '', sc=sc)
         e.model_id = lod_model_id(r, dff)
         dff_txd = (dff.get('txd_name', '') or '').strip() if dff is not None else ''
         own_txd = (r.get('txd_name', '') or '').strip()
@@ -1142,14 +1395,25 @@ def ide_entries(sc, recs, rep):
         if e.model_id <= 0:
             rep.msg('ERROR', "«%s»: Model ID = 0 — not written" % r.name)
             continue
+        if dff is not None:
+            note = lod_name_note(r, e.model_name, sc.model_name(dff), sc=sc)
+            if note:
+                rep.msg('WARNING', note)
+            from .. import settings
+            if settings.get('game', 'SA') in ('III', 'VC'):
+                if e.draw_distance <= 300:
+                    rep.msg('WARNING', '«%s»: LOD distance must exceed 300 for III/VC pairing' % r.name)
+                own, hd_own = ide_linked_file(r), ide_linked_file(dff)
+                if settings.get('game', 'SA') == 'VC' and own and hd_own and own != hd_own:
+                    rep.msg('WARNING', '«%s»: LOD and model are in different IDE files — VC will not pair them' % r.name)
         out.append((r, e, dff))
     return out
 
 
 def ide_write(sc, recs, *, picked='', game='SA', dry_run=False):
     """Add / обновить определения моделей (+ LOD). picked — IDE бокса;
-    модель, связанная с другой IDE, переносится (строка удаляется из
-    старой). Без picked — каждая в свою IDE (или IDE своей модели)."""
+    запись в другом IDE вызывает предупреждение и остаётся в исходном файле.
+    Без picked — каждая в свою IDE (или IDE своей модели)."""
     from inu_gta_core.mapsync import IdeDoc
     rep = Report()
     picked = norm(picked) if picked else ''
@@ -1160,9 +1424,18 @@ def ide_write(sc, recs, *, picked='', game='SA', dry_run=False):
         if not path:
             rep.msg('ERROR', "«%s»: has no IDE of its own — pick a file in the IDE box" % r.name)
             continue
-        if own and picked and own != picked and os.path.isfile(own):
-            moved[r.handle] = (own, r.get('ide_last_model_id', 0), r.get('ide_last_name', ''))
-            rep.msg('INFO', "«%s»: moves from %s to %s" % (r.name, _base(own), _base(picked)))
+        for other in _known_ides(sc.recs, game):
+            if norm(other) == norm(path):
+                continue
+            by_name, _tails = _ide_names(other)
+            names = {e.model_name.casefold()}
+            if norm(other) == norm(own):
+                last = r.get('ide_last_name', '')
+                if last and r.get('ide_last_model_id', 0) == e.model_id:
+                    names.add(last.casefold())
+            if any(by_name.get(nm) for nm in names):
+                rep.msg('WARNING', '«%s»: model already exists in another IDE (%s)' %
+                        (e.model_name, other))
         groups.setdefault(path, []).append((r, e))
     written = set()
     for path, items in groups.items():
@@ -1189,22 +1462,6 @@ def ide_write(sc, recs, *, picked='', game='SA', dry_run=False):
                 stamp_ide(res.tag, path, res.entry)
                 if res.tag.get('model_id', 0) <= 0:
                     res.tag.put({'model_id': int(res.entry.model_id)})
-    # перенос: убрать определения из старых IDE
-    old = {}
-    for h, (own, mid, name) in moved.items():
-        if h in written and mid > 0:
-            old.setdefault(own, []).append((sc.by_handle[h], mid, name))
-    for path, items in old.items():
-        try:
-            doc = IdeDoc.load(path)
-        except OSError as ex:
-            rep.msg('ERROR', "%s: %s" % (_base(path), ex))
-            continue
-        ed = doc.editor(game=game)
-        done = [ed.remove(r, mid, name, anchor_name=name) for r, mid, name in items]
-        rep.plan(path, 'remove %d moved definition(s)' % len(items))
-        if _commit(ed, path, rep, dry_run):
-            rep.add('moved', sum(1 for ok in done if ok))
     return rep
 
 
@@ -1263,39 +1520,22 @@ def ide_sync_from_file(sc, recs, ide_files):
     в нескольких IDE с разными id — не связывается (сообщение). Смена Model
     ID — строка в отчёте. LOD сопоставляется только со строкой LOD."""
     from inu_gta_core.ide import read_ide
-    from inu_gta_core.ipl import is_lod_name, strip_lod_marker
+    from inu_gta_core.mapsync.ide_match import build_index, match_ide_row
     rep = Report()
-    by_id, by_name, lod_by_base = {}, {}, {}
-    parsed = {}
+    parsed, own_indices, kept = {}, {}, {}
 
     def load(fp):
+        fp = norm(fp)
         if fp not in parsed:
             try:
-                parsed[fp] = read_ide(fp)
-            except Exception:                          # noqa: BLE001
+                ide = read_ide(fp)
+                parsed[fp] = list(ide.objects) + list(ide.anims)
+            except Exception:
                 parsed[fp] = None
         return parsed[fp]
 
-    for fp in ide_files:
-        ide = load(fp)
-        if ide is None:
-            continue
-        for e in list(ide.objects) + list(ide.anims):
-            by_id.setdefault(int(e.model_id), []).append((e, fp))
-            nm = (e.model_name or '').strip().lower()
-            if nm:
-                by_name.setdefault(nm, []).append((e, fp))
-                if is_lod_name(nm):
-                    lod_by_base.setdefault(strip_lod_marker(nm).lower(), []).append((e, fp))
-
-    def unique(hits):
-        """Одна запись, или все записи с одним id (одна модель в нескольких
-        IDE) → первая; разные id → None + флаг неоднозначности."""
-        if not hits:
-            return None, False
-        ids = {int(e.model_id) for e, _fp in hits}
-        return (hits[0], False) if len(ids) == 1 else (None, True)
-
+    paths = list(dict.fromkeys(norm(fp) for fp in ide_files if fp))
+    index = build_index((fp, load(fp)) for fp in paths)
     linked = skipped = 0
     for r in recs:
         mt = sc.model_type(r)[0]
@@ -1304,40 +1544,28 @@ def ide_sync_from_file(sc, recs, ide_files):
         is_lod = mt == 'LOD'
         mid = r.get('model_id', 0)
         cname = sc.model_name(r).lower()
-        hit, ambiguous = None, False
         own = ide_linked_file(r)
-        if own and os.path.isfile(own):
-            ide = load(own)
-            if ide is not None:
-                for e in list(ide.objects) + list(ide.anims):
-                    nm = (e.model_name or '').lower()
-                    if nm in (cname, r.get('ide_last_name', '').lower(), 'lod' + cname) \
-                            and is_lod_name(nm) == is_lod:
-                        hit = (e, own)
-                        break
-                if hit is None:
-                    last = r.get('ide_last_model_id', 0) or mid
-                    for e in list(ide.objects) + list(ide.anims):
-                        if int(e.model_id) == last and is_lod_name(e.model_name or '') == is_lod:
-                            hit = (e, own)
-                            break
-        if hit is None:
-            if is_lod:
-                hit, ambiguous = unique(by_name.get(cname, []) if is_lod_name(cname)
-                                        else by_name.get('lod' + cname, []))
-                if hit is None and not ambiguous:
-                    hit, ambiguous = unique(lod_by_base.get(cname, []))
-            else:
-                hit, ambiguous = unique(by_name.get(cname, []))
-            if hit is None and not ambiguous and mid > 0:
-                hit, ambiguous = unique(by_id.get(mid, []))
-            if hit is not None and is_lod_name(hit[0].model_name or '') != is_lod:
-                hit = None
+        own_index = None
+        unreadable = False
+        if own:
+            rows = load(own)
+            unreadable = rows is None
+            if rows is not None:
+                own_index = own_indices.setdefault(own, build_index([(own, rows)]))
+        hit, ambiguous = match_ide_row(own_index, index, cname,
+                                      r.get('ide_last_name', ''),
+                                      r.get('ide_last_model_id', 0), mid, is_lod)
+        if unreadable and (hit is None or int(hit[0].model_id) != mid):
+            kept[own] = kept.get(own, 0) + 1
+            skipped += 1
+            continue
         if hit is None:
             skipped += 1
-            if ambiguous:
-                rep.msg('WARNING', "«%s»: found in several IDE with different IDs — not linked"
-                        % r.name)
+            if ambiguous == 'id':
+                rep.msg('WARNING', '«%s»: ID %d is in several IDEs under different names — not linked' %
+                        (r.name, mid))
+            elif ambiguous:
+                rep.msg('WARNING', '«%s»: found in several IDE with different IDs — not linked' % r.name)
             continue
         e, fp = hit
         eid = int(e.model_id)
@@ -1353,6 +1581,9 @@ def ide_sync_from_file(sc, recs, ide_files):
         r.put(d)
         stamp_ide(r, fp, e)
         linked += 1
+    for fp, count in kept.items():
+        rep.msg('WARNING', '%s: file missing or unreadable — links of %d models kept' %
+                (_base(fp), count))
     return linked, skipped, rep
 
 
@@ -1530,7 +1761,7 @@ def export_ipl_file(sc, recs, path, game, binary=False):
         e = ipl_entry(sc, r)
         if mt == 'LOD':
             dff = lod_owner(sc, lodix, r)
-            e.model_name = lod_model_name(r, base)
+            e.model_name = lod_model_name(r, base, hd=sc.model_name(dff) if dff is not None else '', game=game, sc=sc)
             e.model_id = lod_model_id(r, dff)
         if e.model_id <= 0:
             rep.msg('ERROR', "«%s»: Model ID = 0 — not written" % r.name)

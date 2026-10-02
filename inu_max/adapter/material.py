@@ -8,6 +8,7 @@
 # материал или подматериалы Multi/Sub-Object («слоты» Blender).
 
 import json
+import math
 import os
 
 from .selection import _rt, _undo, classify, selected_meshes
@@ -137,6 +138,31 @@ def set_props(mat, values):
 
 def set_prop(mat, key, value):
     set_props(mat, {key: value})
+
+
+def uv_keyframes(mat):
+    """Sample animated bitmap coordinates over the current scene range."""
+    import pymxs
+    rt = _rt()
+    tex = base_diffuse(mat)
+    if tex is None or not hasattr(tex, 'coords'):
+        raise ValueError('%s: Keyframes needs a diffuse bitmap with coordinates' % mat.name)
+    start, end = float(rt.animationRange.start.frame), float(rt.animationRange.end.frame)
+    if end < start or end - start > 10000:
+        raise ValueError('UV animation range must contain at most 10000 frames')
+    fps = float(rt.frameRate)
+    times = sorted({start, end} | {float(frame) for frame in range(int(start), int(end) + 1) if start <= frame <= end})
+    out = []
+    for frame in times:
+        with pymxs.attime(frame):
+            coords = tex.coords
+            angle = math.radians(float(coords.W_angle))
+            su, sv = float(coords.U_tiling), float(coords.V_tiling)
+            out.append(dict(time=(frame - start) / fps,
+                scale_u=su * math.cos(angle), scale_v=sv * math.cos(angle),
+                shear_u=-sv * math.sin(angle), shear_v=su * math.sin(angle),
+                trans_u=float(coords.U_offset), trans_v=float(coords.V_offset)))
+    return out
 
 
 # ── цвет и текстура Standard-материала ───────────────────────────────

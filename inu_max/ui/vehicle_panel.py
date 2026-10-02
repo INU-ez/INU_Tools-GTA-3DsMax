@@ -118,7 +118,8 @@ class VehicleTools(BuildMixin, QtWidgets.QWidget):
         bb.rejected.connect(dlg.reject)
         form.addRow(bb)
         if dlg.exec():
-            self._dispatch("Vehicle Scale ×%g" % f.value(), "vehicle_scale")
+            self._dispatch("Vehicle Scale ×%g" % f.value(), "vehicle_scale",
+                           factor=f.value(), dummies_only=d.isChecked())
 
     def _scope_meshes(self):
         """Меши иерархии активной машины (или всей сцены, если ничего не

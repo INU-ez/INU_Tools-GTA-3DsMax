@@ -193,6 +193,33 @@ def profile_for(game: str) -> GameProfile:
     return _PROFILES.get(game, _PROFILE_SA)
 
 
+# ── X Radar tile layout ──────────────────────────────────────────
+# SA: 12×12 tiles radar00..radar143, 500 m each over ±3000 (gta_sa.exe
+# CRadar::Initialise 0x587FB0 loops 0x90 `radar%02d`; GetTextureCorners
+# 0x584D90: x0=(x-6)*500, y0=(5-y)*500 → row 0 is the north edge;
+# DrawRadarSection 0x586110 indexes x + y*12). III/VC: 8×8 tiles of
+# 500 m over ±2000 (re3/reVC Radar.cpp RADAR_NUM_TILES, RADAR_MIN/MAX).
+
+def radar_layout(game: str, grid_override: int = 0):
+    """Return ``(grid, map_half)`` for X Radar. ``grid_override`` > 0
+    replaces the game's grid (coverage stays the game's, so the tile
+    size changes). Unknown games fall back to SA like profile_for."""
+    small = game in (GAME_III, GAME_VC)
+    map_half = 2000.0 if small else 3000.0
+    if grid_override and grid_override > 0:
+        return int(grid_override), map_half
+    return (8 if small else 12), map_half
+
+
+def radar_tile_center(idx: int, grid: int, map_half: float):
+    """World (x, y) centre of radar tile ``idx`` — row-major, row 0 is
+    the north edge (+Y), column 0 the west edge (−X)."""
+    sect = map_half * 2 / grid
+    x = idx % grid
+    y = idx // grid
+    return -map_half + sect * (x + 0.5), map_half - sect * (y + 0.5)
+
+
 # ── Scene access helper ──────────────────────────────────────────
 # Pull the active game from a bpy.types.Scene without forcing every
 # caller to know the property name. Returns SA if the scene doesn't

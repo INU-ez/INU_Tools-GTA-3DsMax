@@ -5,8 +5,6 @@
 # Работает: импорт IFP в библиотеку анимаций сцены (счётчик и список),
 # проверка round-trip, статус Handsign, состояние rig'а анимированного
 # объекта (подсказки, структура, настройки pivot'а в user properties),
-# «To pivot» / «To root». Остальное — окна с опциями INU и заглушки: логика
-# сцены (ключи, IK, камера, веса) — следующий этап.
 
 from PySide6 import QtWidgets, QtCore, QtGui
 
@@ -118,7 +116,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
     # ════════════════════ вкладка Characters ══════════════════════════
     def _build_char(self, w):
         v = _vbox(w)
-        stub = self._stub
+        stub = self._action
 
         # Weight Paint: швы — в INU в режиме Weight Paint, в Max у меша со
         # Skin (веса красят в нём)
@@ -449,7 +447,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
     # ════════════════════ вкладка Objects ═════════════════════════════
     def _build_obj(self, w):
         v = _vbox(w)
-        stub = self._stub
+        stub = self._action
         self._lb_count_obj = QtWidgets.QLabel()
         v.addWidget(self._lb_count_obj)
         amo = self._box(margins=(4, 4, 4, 4))
@@ -491,7 +489,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
 
     def _build_pivot(self):
         """Настройки pivot'а, в котором лежит выделение (бокс INU ed_box)."""
-        stub = self._stub
+        stub = self._action
         b = self._box(margins=(4, 4, 4, 4))
         self._pv_title = IconLabel("", 'pivot')
         self._pv_counts = IconLabel("", 'mesh', wrap=True)
@@ -660,7 +658,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
             self._cmb.setCurrentText(str(self._get('ifp_action', '') or ''))
             self._cmb.blockSignals(False)
         self._b_apply.setEnabled(bool(self._get('ifp_action', '')))
-        cur = _safe(lambda: _sel().get_prop(skel, 'ifp_current', ''), '') \
+        cur = _safe(lambda: _sel().get_field(skel, 'ifp_current', ''), '') \
             if skel is not None else ''
         self._cur.setVisible(bool(cur))
         self._lb_cur.setText("Current: %s" % cur)
@@ -762,11 +760,15 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         self._lb_rps.setText("≈ %+.2f rev/s at FPS %d" % (rps, fps))
 
     def _pv_set(self, key, value):
-        """Правка настройки pivot'а → user property pivot'а (ключи цикла
-        перестроит логика сцены — следующий этап)."""
+        """Update pivot properties and regenerate the automatic cycle."""
         if self._pivot is None:
             return
         _safe(lambda: _sel().set_prop([self._pivot], key, value))
+        from ..ops.rig_tools import regenerate_pivot
+        try:
+            regenerate_pivot(self._pivot)
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self, 'INU: Pivot Cycle', str(error))
         self._show_mode(self._b_auto.isChecked())
 
     def _on_attach_target(self, target):
@@ -775,14 +777,10 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
                                           target))
 
     # ════════════════════ действия ════════════════════════════════════
-    def _stub(self, label, key):
-        """Кнопка, логика которой ещё не перенесена: заглушка панели."""
+    def _action(self, label, key):
+        """Callback for a registered operation."""
         return lambda: self._dispatch(label, key)
 
-    def _not_yet(self, title, what, lines):
-        QtWidgets.QMessageBox.information(
-            self, "INU: " + title,
-            "%s is not implemented yet.\n\n%s" % (what, "\n".join(lines)))
 
     def _skeleton(self):
         return _safe(lambda: _anim().skeleton_root(self._node))
@@ -833,7 +831,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
             lines.append("ANP3 is not supported in %s — switching to ANPK" % game)
             fmt = 'ANPK'
         lines.append("Format: %s" % fmt)
-        self._not_yet("Export IFP", "IFP export", lines)
+        self._dispatch('Export IFP', 'export_ifp', path=dlg.save_path(), format=fmt)
 
     def _merge_ifp(self):
         if not self._need_skeleton():
@@ -841,8 +839,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         dlg = self._dialog("INU: Add to IFP", 'save', ao.IFP_FILTERS, 'ifp_merge',
                            "Add", ao.IfpMergeOptions(), "ped.ifp", confirm=False)
         if dlg.exec():
-            self._not_yet("Add to IFP", "Merging into IFP",
-                          ["File: %s" % dlg.save_path()])
+            self._dispatch('Add to IFP', 'export_ifp', path=dlg.save_path(), merge=True)
 
     def _export_skin(self):
         # как quick_single_export INU: «Один DFF» + формат DFF, окно экспорта
@@ -854,8 +851,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         dlg = self._dialog("INU: Import Camera .dat", 'open', ao.CAMERA_FILTERS,
                            'camera', "Import", ao.CameraOptions(False))
         if dlg.exec():
-            self._not_yet("Import Camera", "Camera import",
-                          ["File: %s" % dlg.selected_files()[0]])
+            self._dispatch('Import Camera', 'import_camera', path=dlg.selected_files()[0])
 
     def _camera_export(self):
         node = self._node
@@ -864,8 +860,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
                            'camera', "Export", ao.CameraOptions(True),
                            name + ".dat")
         if dlg.exec():
-            self._not_yet("Export Camera", "Camera export",
-                          ["File: %s" % dlg.save_path()])
+            self._dispatch('Export Camera', 'export_camera', path=dlg.save_path())
 
     def _on_anim(self, text):
         self._set('ifp_action', text.strip())
@@ -873,12 +868,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
 
     def _on_preview(self, on):
         self._b_preview.setText("Preview ●" if on else "Preview")
-        if on:
-            self._b_preview.blockSignals(True)
-            self._b_preview.setChecked(False)
-            self._b_preview.setText("Preview")
-            self._b_preview.blockSignals(False)
-            self._dispatch("Preview", "ifp_preview_toggle")
+        self._dispatch("Preview", "ifp_preview_toggle", on=on)
 
     def _roundtrip(self):
         dlg = self._dialog("INU: Validate IFP Round-trip", 'open',
@@ -903,13 +893,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         if not dlg.exec():
             return
         g = self._get
-        self._not_yet("Batch Import IFP", "Batch import", [
-            "Folder: %s" % dlg.selected_folder(),
-            "Prefix: %s · Mode: %s · Gap: %g" % (
-                g('batch_prefix', '') or "—", g('batch_mode', 'NLA'),
-                g('batch_gap', 10.0)),
-            "Start: %d · Count: %s" % (g('batch_start', 0),
-                                       g('batch_count', 0) or "all")])
+        self._dispatch('Batch Import IFP','batch_ifp',folder=dlg.selected_folder())
 
     def _export_gesture(self):
         self._set('hs_format', ao.default_format(self._get('game', 'SA')))
@@ -917,8 +901,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
                            ao.IFP_FILTERS, 'ifp_gesture', "Export",
                            ao.GestureOptions(), "ghands.ifp", confirm=False)
         if dlg.exec():
-            self._not_yet("Export gesture", "Gesture export",
-                          ["File: %s" % dlg.save_path()])
+            self._dispatch('Export gesture','export_gesture',path=dlg.save_path())
 
     def _animobj_export(self):
         if self._node is None:
@@ -948,10 +931,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         dlg = ao.AnimObjExportDialog(self, anim, n_piv)
         if dlg.exec():
             g = self._get
-            self._not_yet("Export Animated Object", "Animated object export", [
-                "Folder: %s" % (g('ao_directory', '') or "—"),
-                "Base name: %s · Model ID: %d" % (g('ao_base_name', ''),
-                                                  g('ao_model_id', 0))])
+            self._dispatch('Export Animated Object','animobj_export')
 
     def _add_pivot(self):
         if _safe(_anim().find_rig) is None:
@@ -959,9 +939,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
                                           "No Empty-rig in the scene")
             return
         if ao.AddPivotDialog(self).exec():
-            self._not_yet("Add Pivot", "Adding a pivot", [
-                "Name: %s · Axis: %s" % (self._get('pv_name', 'pivot2'),
-                                         self._get('pv_axis', 'Z'))])
+            self._dispatch('Add Pivot','animobj_add_pivot')
 
     def _parent_to(self, to):
         res = _safe(lambda: _anim().parent_selected(to))

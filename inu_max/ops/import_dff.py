@@ -47,9 +47,10 @@ def import_dff(filepath, auto_txd=True, extra_tex=None):
         tex_map = dict(tex_map)
         tex_map.update(extra_tex)
 
-    created = scene_build.build(plan, tex_map, mark)
     if plan.pipeline:
-        settings.set('export_pipeline', plan.pipeline)
+        from .pipeline_flags import set_pipeline
+        set_pipeline(plan.pipeline)
+    created = scene_build.build(plan, tex_map, mark)
     for w in plan.warnings:
         print("[INU import_dff] %s: %s" % (os.path.basename(filepath), w))
 

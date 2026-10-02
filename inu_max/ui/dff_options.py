@@ -87,7 +87,8 @@ def pipeline_buttons(owner, on_change=None):
     Ped) — для слитого блока FusedBlock(..., pad=3). Возвращает (кнопки,
     QButtonGroup)."""
     def _changed(d):
-        owner._set('export_pipeline', d)
+        from ..ops.pipeline_flags import set_pipeline
+        set_pipeline(d)
         if on_change is not None:
             on_change()
     return owner._seg_buttons(
@@ -159,7 +160,12 @@ class FlagsBox(BuildMixin, QtWidgets.QWidget):
         """Правка флага → на все выделенные меши (как в INU)."""
         try:
             sel = _selection()
-            sel.set_flag(sel.selected_meshes(), key, value)
+            nodes = sel.selected_meshes()
+            sel.set_flag(nodes, key, value)
+            if nodes:
+                from ..ops.pipeline_flags import save_global
+                from .. import settings
+                save_global(settings.get('export_pipeline', 'NONE'), sel.get_flags(nodes[0]))
         except Exception as e:                         # noqa: BLE001
             print("[INU] write DFF flag %s: %r" % (key, e))
 
@@ -270,7 +276,7 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
             [("PC", "PC"), ("Mobile", "MOBILE")], self._get('platform', 'PC'),
             lambda d: self._set('platform', d),
             "PC / Mobile: Mobile writes Native Data PLG geometry. Mobile TXD "
-            "is not implemented in 3ds Max yet — ignored: TXD stays PC format.")
+            "is written in PC format and needs PVRTC/ETC conversion for the device.")
         game, self._game_group = self._seg_buttons(
             [("SA", "SA"), ("III", "III"), ("VC", "VC")], self._get('game', 'SA'),
             self._on_game, "Target game: RW version of the DFF/COL/TXD.")
@@ -346,10 +352,10 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         self._w_auto_light.setLayout(self._row(
             self._spin('col_auto_day', 0, 15, 14,
                        "Collision day light for 'Auto' mode. 0–15 (low nibble "
-                       "of the light byte). 14 = standard (old 78)", prefix="Day: "),
+                       "of the lighting byte). 14 = standard (old 78)", prefix="Day: "),
             self._spin('col_auto_night', 0, 15, 4,
                        "Collision night light for 'Auto' mode. 0–15 (high nibble "
-                       "of the light byte). 4 = standard (old 78)", prefix="Night: ")))
+                       "of the lighting byte). 4 = standard (old 78)", prefix="Night: ")))
         vl.addWidget(self._w_auto_light)
         g.addWidget(self._w_col_light)
         r.body.addWidget(g.box)
@@ -394,12 +400,10 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
         g = self._group("Output")
         g.addWidget(self._check(
             "All → IMG", 'export_to_img', False,
-            "Export straight into the .img archive (not implemented in 3ds Max "
-            "yet — ignored: export goes to the chosen folder). For .img use "
-            "Map IO → IMG → Export.", self._refresh))
-        self._lb_img = self._info("Not implemented in 3ds Max yet — ignored: "
-                                  "export goes to the chosen folder.\nFor .img: "
-                                  "Map IO → IMG → Export")
+            "Export into IMG archives. After Export choose the archive and "
+            "confirm the resources. Cannot be combined with Single DFF.", self._refresh))
+        self._lb_img = self._info("Export opens the IMG resource dialog. "
+                                  "Each model uses its linked archive, or the chosen archive.")
         self._lb_img.setStyleSheet("color:%s;" % C['err'])
         g.addWidget(self._lb_img)
         r.body.addWidget(g.box)
@@ -416,6 +420,7 @@ class ExportOptions(BuildMixin, QtWidgets.QWidget):
 
     def _on_pipeline(self):
         self.flags.refresh()
+        self.flags.load(selection_snapshot()[1])
 
     def _on_formats(self):
         self._refresh()

@@ -4,7 +4,6 @@
 # и роллаут «Проверка перед экспортом» для окна DFF IO.
 # Состав и подписи — как в INU; оформление — роллауты Kam's. Анализ файлов
 # и текстур работает (ядро inu_gta_core через ops/checks.py); операции над
-# сценой пока заглушки (dispatch → «not implemented»).
 
 import os
 
@@ -219,9 +218,12 @@ class CheckTools(BuildMixin, QtWidgets.QWidget):
                     form.labelForField(w).setVisible(show)
             mode.currentIndexChanged.connect(lambda _i: sync())
             sync()
-            return dict(mode=mode.currentData)
-        if self._dialog("INU: Fragment Mesh", build) is not None:
-            self._dispatch("Fragment mesh", "fragment_mesh")
+            return dict(mode=mode.currentData, xstep=xs.value, ystep=ys.value,
+                        count=cnt.value, seed=seed.value, name=name.text,
+                        delete_original=dele.isChecked)
+        getters = self._dialog("INU: Fragment Mesh", build)
+        if getters is not None:
+            self._dispatch("Fragment mesh", "fragment_mesh", **{k: fn() for k, fn in getters.items()})
 
     def _chunk_dialog(self):
         def build(dlg, form):
@@ -247,9 +249,11 @@ class CheckTools(BuildMixin, QtWidgets.QWidget):
             form.addRow(mats)
             form.addRow(center)
             form.addRow(hide)
-            return dict(size=size.value)
-        if self._dialog("INU: Split into chunks", build) is not None:
-            self._dispatch("Split into chunks", "chunk_map")
+            return dict(size=size.value, cut=cut.currentData, separate_materials=mats.isChecked,
+                        center_origin=center.isChecked, hide_original=hide.isChecked)
+        getters = self._dialog("INU: Split into chunks", build)
+        if getters is not None:
+            self._dispatch("Split into chunks", "chunk_map", **{k: fn() for k, fn in getters.items()})
 
 
 # ══ Список проблем (результаты скана / анализа) ══════════════════════
@@ -951,7 +955,8 @@ class PreExportCheck(BuildMixin, QtWidgets.QWidget):
             head.addWidget(icon_btn('select', "Make the object/material from the "
                                     "result row active",
                                     lambda: self._dispatch("Select " + title,
-                                                           "validate_goto")))
+                                                           "validate_goto", target_name=title,
+                                                           target_kind=items[0].get('target_kind', 'OBJECT'))))
         b.addLayout(head)
         if opened:
             for it in items:

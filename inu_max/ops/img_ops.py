@@ -4,38 +4,36 @@
 # Blender-версии INU). Архивы — ядро inu_gta_core.img (VER1 III/VC .dir+.img,
 # VER2 SA — формат берётся из самого файла).
 #
-# Исправлено против Blender (решения пользователя, 2026-09-28):
+# Правила IMG (решения пользователя и паритет с Blender, 01.10.2026):
 # - TXD сливается с TXD архива (одноимённые текстуры заменяются, чужие
-#   остаются) — в Blender общий TXD заменялся текстурами выделенных, и
-#   остальные модели этого TXD теряли текстуры;
+#   остаются);
 # - COL — в свою библиотеку: .col архива, где уже есть модель с этим именем,
 #   меняется только её запись (остальные модели — байт в байт); нет нигде —
 #   отдельный <модель>.col; сферы / боксы — в системе модели;
 # - заглушки LOD (копия модели) и пустой COL — выключены по умолчанию;
-# - Remove: DFF + LOD модели, TXD — только если его больше никто не
+# - Remove: DFF и только явно выделенный LOD, TXD — если его больше никто не
 #   использует (IDE игры из default.dat + gta*.dat / бокса / списка, все
 #   секции с TXD и txdp; модели сцены), COL — свой .col
 #   или запись в библиотеке; перед удалением — список и вопрос;
 # - модели из разных архивов — каждая в свой, без своего — в выбранный;
 # - Verify — архивы игры в порядке загрузки (gta3.img, gta_int.img, IMG из
 #   gta.dat, затем прочие; папки кэша INU пропускаются), первый + где ещё;
-#   LOD ищется под своим именем (в Blender — под именем модели);
-# - формат архива — из файла (в Blender — из игры сцены: SA-архив при сцене
-#   III/VC тихо портился);
+#   LOD ищется под своим именем;
+# - формат архива проверяется против игры экспорта до сборки ресурсов;
 # - после Export ставится, после Remove снимается «In IMG» (img_target_file);
 # - Rebuild IMG — и кнопкой в строке IMG (с подтверждением).
 # Бэкап архива не делается (решение пользователя; как в Blender).
 
 import os
 import re
-import struct
+
+from inu_gta_core.col_library import col_chunks, col_splice
 
 from .. import settings
 from . import map_link as ML
 
 MAX_NAME = 23                         # движок обнуляет 24-й байт имени записи
 _CACHES = ('img_tex_names.json', 'img_col_names.json')
-_COL_MAGIC = (b'COLL', b'COL2', b'COL3', b'COL4')
 
 
 def _img():
@@ -118,43 +116,6 @@ def _drop_caches(path):
 
 # ── COL-библиотеки: записи моделей как есть, по байтам ───────────────
 
-def col_chunks(data):
-    """[(начало, конец, имя модели, model_id)] записей COL подряд."""
-    out, pos = [], 0
-    while pos + 32 <= len(data) and data[pos:pos + 4] in _COL_MAGIC:
-        size = struct.unpack_from('<I', data, pos + 4)[0]
-        end = pos + 8 + size
-        if end > len(data):
-            break
-        name = data[pos + 8:pos + 30].split(b'\x00', 1)[0].decode('ascii', 'replace')
-        mid = struct.unpack_from('<H', data, pos + 30)[0]
-        out.append((pos, end, name, mid))
-        pos = end
-    return out
-
-
-def col_splice(data, name, make):
-    """Записи модели name → make(model_id) (None — удалить). (данные,
-    сколько записей, сколько моделей осталось). Прочие записи и хвост —
-    байт в байт."""
-    chunks = col_chunks(data)
-    out, n, left, prev = [], 0, 0, 0
-    for s, e, nm, mid in chunks:
-        out.append(data[prev:s])
-        if nm.lower() == name.lower():
-            n += 1
-            new = make(mid)
-            if new:
-                out.append(new)
-                left += 1
-        else:
-            out.append(data[s:e])
-            left += 1
-        prev = e
-    out.append(data[prev:])
-    return b''.join(out), n, left
-
-
 def _col_index(reader):
     """{имя модели (нижний): [имя записи .col]} архива (по заголовкам)."""
     idx = {}
@@ -208,13 +169,14 @@ def plan():
         lod_base = sc.model_type(lod)[1] if lod is not None else ''
         meshes, prims = _col_nodes(sc, base) if base else ([], [])
         txd = ((dff.get('txd_name', '') or '').strip() or base) if dff is not None else ''
-        lod_txd = ((lod.get('txd_name', '') or '').strip() if lod is not None else '') or txd
+        lod_txd = (((lod.get('txd_name', '') or '').strip() if lod is not None else '')
+                   or txd or (ML.lod_model_name(lod, lod_base) if lod is not None else ''))
         own = dff.get('img_target_file', '') if dff is not None else \
             lod.get('img_target_file', '')
         it = dict(dff=dff, lod=lod, name=base or ML.lod_model_name(lod, lod_base),
-                  lod_name=ML.lod_model_name(lod, lod_base) if lod is not None else '',
+                  lod_name=ML.lod_model_name(lod, lod_base, hd=base, sc=sc) if lod is not None else '',
                   col_meshes=meshes, col_prims=prims, txd=txd or lod_txd,
-                  lod_txd=lod_txd, own=own if own and os.path.isfile(own) else '',
+                  lod_txd=lod_txd, own=own,
                   inc_dff=want_dff and dff is not None, inc_lod=lod is not None,
                   inc_col=bool(meshes or prims), stub_lod=False, stub_col=False,
                   inc_txd=True)
@@ -245,8 +207,26 @@ def _check_name(fname, bad):
     except UnicodeEncodeError:
         bad.append(fname)
         return
-    if not raw or len(raw) > MAX_NAME:
+    if not raw or fname.startswith('.') or len(raw) > MAX_NAME:
         bad.append(fname)
+
+
+def _prepare_archive(arch, game, I):
+    """Validate the destination before building DFF/COL/TXD resources."""
+    version = I.IMG_VERSION_2 if game == 'SA' else I.IMG_VERSION_1
+    dir_path = os.path.splitext(arch)[0] + '.dir'
+    if (os.path.getsize(arch) == 0 and not os.path.exists(dir_path)
+            and not os.path.exists(arch + '.dir')):
+        I.create_img(arch, version=version)
+    I.read_directory(arch)
+    actual = I.detect_img_version(arch)
+    if actual != version:
+        raise ValueError("archive is VER%d but the export game is %s — "
+                         "switch the game or pick another archive" % (actual, game))
+    # Probe both files of VER1 before the potentially expensive TXD build.
+    for path in ([arch, dir_path] if actual == I.IMG_VERSION_1 else [arch]):
+        with open(path, 'r+b'):
+            pass
 
 
 def export_to_img(items, default_archive, rebuild_after=False):
@@ -256,43 +236,139 @@ def export_to_img(items, default_archive, rebuild_after=False):
     I = _img()
     opts = DE._opts()
     warnings, errors, lines = [], [], []
-    groups = {}
     for it in items:
-        if not (it['inc_dff'] or it['inc_lod'] or it['inc_col'] or it['stub_lod']
-                or it['stub_col']):
+        if it['inc_lod'] and it['lod'] is not None and it['dff'] is not None:
+            note = ML.lod_name_note(it['lod'], it['lod_name'], it['name'], game=opts['game'])
+            if note:
+                warnings.append(note)
+    from inu_gta_core.img_routing import route_groups, lod_routes
+    active = [dict(it) for it in items if any(it[k] for k in
+              ('inc_dff', 'inc_lod', 'inc_col', 'stub_lod', 'stub_col'))]
+    routes, missing = route_groups({i: it['own'] for i, it in enumerate(active)},
+                                    default_archive)
+    errors += ["«%s»: no IMG archive — choose one in the window" % active[i]['name']
+               for i in missing]
+    main_arch = {i: a for a, indices in routes.items() for i in indices}
+    lod_arch, missing_lod = lod_routes(
+        {i: (it['lod'].get('img_target_file', '') if it['lod'] is not None else '')
+         for i, it in enumerate(active) if it['inc_lod'] or it['stub_lod']}, main_arch)
+    errors += ["«%s»: explicit LOD IMG is missing — LOD not written" % active[i]['name']
+               for i in missing_lod]
+    groups, txd_sources, col_sources = {}, {}, []
+    for i, it in enumerate(active):
+        arch = main_arch.get(i)
+        if arch is None:
             continue
-        arch = it['own'] or default_archive
-        if not arch or not os.path.isfile(arch):
-            errors.append("«%s»: no IMG archive — choose one in the window" % it['name'])
-            continue
-        groups.setdefault(arch, []).append(it)
+        main = dict(it, inc_lod=False, stub_lod=False, inc_txd=False)
+        if it['inc_dff']:
+            groups.setdefault(arch, []).append(main)
+        else:
+            groups.setdefault(arch, [])
+        if it['inc_col'] or it['stub_col']:
+            col_sources.append((arch, dict(main, inc_dff=False)))
+        main['inc_col'] = main['stub_col'] = False
+        if it['inc_txd'] and it['inc_dff'] and it['dff'] is not None:
+            txd_sources.setdefault(it['txd'].casefold(), []).append(
+                (it['txd'], arch, it['dff'].node, False))
+        la = lod_arch.get(i)
+        if la:
+            groups.setdefault(la, []).append(dict(it, inc_dff=False, inc_col=False,
+                                                 stub_col=False, inc_txd=False))
+            node = (it['lod'].node if it['lod'] is not None else
+                    it['dff'].node if it['dff'] is not None else None)
+            if it['inc_txd'] and node is not None:
+                txd_sources.setdefault(it['lod_txd'].casefold(), []).append(
+                    (it['lod_txd'], la, node, True))
     if not groups:
         return 'ERROR', "\n".join(errors or ["Nothing to export"])
     # имена записей: движок читает 23 символа (24-й — ноль)
     bad = []
-    for arch, its in groups.items():
+    for its in [active]:
         for it in its:
             if it['inc_dff']:
                 _check_name(it['name'] + '.dff', bad)
             if it['inc_lod'] or it['stub_lod']:
-                _check_name((it['lod_name'] or 'LOD' + it['name']) + '.dff', bad)
+                _check_name((it['lod_name'] or ML.new_lod_name(it['name'], it['name'], game=opts['game'])) + '.dff', bad)
             if it['inc_col'] or it['stub_col']:
                 _check_name(it['name'] + '.col', bad)
             if it['inc_txd']:
-                _check_name(it['txd'] + '.txd', bad)
-                _check_name(it['lod_txd'] + '.txd', bad)
+                if it['inc_dff'] and it['dff'] is not None:
+                    _check_name(it['txd'] + '.txd', bad)
+                if it['inc_lod'] or it['stub_lod']:
+                    _check_name(it['lod_txd'] + '.txd', bad)
     if bad:
-        return 'ERROR', ("IMG entry name longer than %d characters (or not ASCII) — the "
+        return 'ERROR', ("IMG entry name empty, longer than %d characters or not ASCII — the "
                          "game won't find it: %s. Shorten the model / TXD name."
                          % (MAX_NAME, ", ".join(sorted(set(bad))[:8])))
+    prepared = {}
+    for arch, its in groups.items():
+        try:
+            _prepare_archive(arch, opts['game'], I)
+        except PermissionError:
+            errors.append("%s: the .img file is locked — close the game (or other "
+                          "program) and try again" % _base(arch))
+        except (ValueError, OSError) as e:
+            errors.append("%s: %s" % (_base(arch), e))
+        except Exception as e:                         # noqa: BLE001
+            errors.append("%s: %s" % (_base(arch), e))
+        else:
+            prepared[arch] = its
+    if not prepared:
+        return 'ERROR', "\n".join("Error: " + e for e in errors)
+    from inu_gta_core.img_routing import shared_targets
+    names, indices = {}, {}
+    for arch in groups:
+        try:
+            with I.ImgReader(arch) as reader:
+                names[arch] = {e.name.casefold() for e in reader.entries}
+                indices[arch] = _col_index(reader) if col_sources else {}
+        except Exception:
+            names[arch] = None
+            indices[arch] = None
+    txd_jobs = {}
+    for sources in txd_sources.values():
+        tname = sources[0][0]
+        users = sorted(dict.fromkeys(a for _, a, _, _ in sources),
+                       key=lambda a: a not in prepared)
+        entry = (tname + '.txd').casefold()
+        targets = shared_targets(users, lambda a: names[a] is None or entry in names[a],
+                                 required=[a for _, a, _, required in sources if required])
+        # A complete shared dictionary requires every selected source to be readable.
+        if any(a not in prepared for a in users):
+            errors.append('%s: not written — a source archive was rejected' % entry)
+            continue
+        objs = list({id(node): node for _, _, node, _ in sources}.values())
+        for arch in targets:
+            if arch in prepared:
+                txd_jobs.setdefault(arch, {})[tname] = objs
+        if len(users) > 1:
+            lines.append('%s: complete shared TXD → %s' %
+                         (entry, ', '.join(_base(a) for a in targets)))
+    for own, it in col_sources:
+        if own not in prepared:
+            continue
+        base = it['name'].casefold()
+        targets = [a for a in groups if indices[a] is None or
+                   indices[a].get(base) or base + '.col' in (names[a] or ())]
+        targets = targets or [own]
+        for arch in targets:
+            if arch in prepared:
+                prepared[arch].append(it)
+            else:
+                errors.append('%s.col: not written in rejected archive %s' %
+                              (base, _base(arch)))
     written_recs = {}
     with sr.full_result():
-        for arch, its in groups.items():
+        for arch, its in prepared.items():
             try:
-                res = _export_archive(arch, its, opts, warnings, DE, fx_ad, I)
+                res = _export_archive(arch, its, opts, warnings, DE, fx_ad, I,
+                                      txd_jobs.get(arch, {}))
             except PermissionError:
                 errors.append("%s: the .img file is locked — close the game (or other "
                               "program) and try again" % _base(arch))
+                continue
+            except (ValueError, OSError) as e:
+                errors.append("%s: %s" % (_base(arch), e))
                 continue
             except Exception as e:                     # noqa: BLE001
                 import traceback
@@ -302,7 +378,8 @@ def export_to_img(items, default_archive, rebuild_after=False):
             _drop_caches(arch)
             lines.append(res['line'])
             for r in res['recs']:
-                written_recs[r.handle] = (r, arch)
+                record, destinations = written_recs.setdefault(r.handle, (r, set()))
+                destinations.add(arch)
             if rebuild_after:
                 try:
                     st = I.rebuild_img(arch)
@@ -313,22 +390,26 @@ def export_to_img(items, default_archive, rebuild_after=False):
                     errors.append("%s: rebuild failed — %s" % (_base(arch), e))
     if written_recs:
         with _undo("INU: Export to IMG"):
-            for r, arch in written_recs.values():
-                r.put({'img_target_file': arch})
-    level = 'ERROR' if errors and not lines else ('WARNING' if errors or warnings else 'INFO')
+            for r, destinations in written_recs.values():
+                # A shared LOD without its own archive must keep routing to all
+                # owners on the next export, rather than acquiring the last IMG.
+                if len(destinations) == 1:
+                    r.put({'img_target_file': next(iter(destinations))})
+    level = 'ERROR' if errors else ('WARNING' if warnings else 'INFO')
     return level, "\n".join(lines + ["Error: " + e for e in errors] + warnings[:30])
 
 
-def _export_archive(arch, its, opts, warnings, DE, fx_ad, I):
+def _export_archive(arch, its, opts, warnings, DE, fx_ad, I, txd_jobs=None):
     """Одна запись в архив: сначала всё собрать (DFF / LOD / COL / TXD,
     TXD и COL-библиотеки — слиянием с данными архива), затем одна сессия
     ImgWriter. {'line', 'recs'}."""
     files, recs = [], []                      # [(имя записи, байты)]
     n = dict(dff=0, lod=0, col=0, lib=0, txd=0)
     with I.ImgReader(arch) as rd:
+        names = {e.name.lower(): e.name for e in rd.entries}
         col_idx = _col_index(rd) if any(it['inc_col'] or it['stub_col'] for it in its) else {}
         libs = {}                             # запись .col → байты (с правками)
-        txd_objs = {}                         # имя TXD → [узлы]
+        txd_objs = dict(txd_jobs or {})       # complete shared source buckets
         for it in its:
             dff, lod = it['dff'], it['lod']
             if it['inc_dff'] and dff is not None:
@@ -342,7 +423,7 @@ def _export_archive(arch, its, opts, warnings, DE, fx_ad, I):
             lod_node = lod.node if (it['inc_lod'] and lod is not None) else (
                 dff.node if (it['stub_lod'] and lod is None and dff is not None) else None)
             if lod_node is not None:
-                lname = it['lod_name'] or 'LOD' + it['name']
+                lname = it['lod_name'] or ML.new_lod_name(it['name'], it['name'], game=opts['game'])
                 nodes = DE._nodes_for([(lod_node, None)], opts['pipeline'])
                 files.append((lname + '.dff', DE.dff_bytes(lname, nodes, [], opts, warnings)))
                 n['lod'] += 1
@@ -360,12 +441,17 @@ def _export_archive(arch, its, opts, warnings, DE, fx_ad, I):
                     model.model_id = mid
                     return write_col([model], target_game=opts['game'])
                 where = col_idx.get(it['name'].lower(), [])
+                fallback = names.get((it['name'] + '.col').lower())
+                if not where and fallback:
+                    where = [fallback]
                 if where:
                     for ename in where:
                         data = libs.get(ename)
                         if data is None:
                             data = rd.read(ename) or b''
                         data, cnt, _left = col_splice(data, it['name'], make)
+                        if not cnt:
+                            data += make(0)
                         libs[ename] = data
                     n['lib'] += 1
                 else:
@@ -380,6 +466,8 @@ def _export_archive(arch, its, opts, warnings, DE, fx_ad, I):
         for tname, objs in txd_objs.items():
             base = rd.read(tname + '.txd')
             data, note = DE.txd_data(tname + '.txd', objs, opts, warnings, base)
+            if data is None:
+                raise ValueError('%s.txd: texture dictionary could not be built' % tname)
             if data is not None:
                 files.append((tname + '.txd', data))
                 n['txd'] += 1
@@ -402,116 +490,172 @@ def _export_archive(arch, its, opts, warnings, DE, fx_ad, I):
 # ── Remove from IMG ──────────────────────────────────────────────────
 
 def _txd_ide_files():
-    """IDE для проверки TXD: список + IDE игры (default.dat + gta*.dat, как
-    From Game ID-менеджера) + IDE бокса — всегда, не только когда пусто."""
-    from inu_gta_core.gta_dat import parse_gta_dat, resolve_paths
-    from .map_link_ops import ide_targets, _dedupe
-    from .id_manager_ops import _DATS
-    raw = list(ide_targets()[0])
+    """Export lists, startup IDEs of the game and the IDE box."""
+    from inu_gta_core.gta_dat import game_ide_paths
+    from .map_link_ops import _dedupe
+    raw = list(settings.get('ide_sync_list', []) or [])
     root = settings.get('game_root', '') or ''
     if root and os.path.isdir(root):
-        for dat in _DATS:
-            p = os.path.join(root, 'data', dat)
-            if not os.path.isfile(p):
-                continue
-            try:
-                raw += resolve_paths(root, parse_gta_dat(p)).ide_paths
-            except Exception as e:                     # noqa: BLE001
-                print("[INU] %s: %r" % (dat, e))
+        raw += game_ide_paths(root)[0]
     raw.append(settings.get('ide_path', '') or '')
     return _dedupe([p for p in raw if p])[0]
 
 
-def _txd_users(exclude_models):
-    """{имя TXD (нижний): {модели}} — кто использует TXD: IDE игры / бокса /
-    списка (все секции с TXD + родитель из txdp) и модели сцены (кроме
-    exclude_models)."""
-    from inu_gta_core.ide import read_ide
-    users = {}
-    ex = {m.lower() for m in exclude_models}
-    for p in _txd_ide_files():
-        try:
-            ide = read_ide(p)
-        except Exception:                              # noqa: BLE001
+def _remove_scene(sc):
+    """Resource names and LOD owners across the whole scene, including copies."""
+    lodix = ML.LodIndex(sc)
+    names, kinds, dffs, lods, owners, by_base = {}, {}, [], [], {}, {}
+    own_ides = []
+    for r in sc.recs:
+        own = ML.ide_linked_file(r)
+        if own:
+            own_ides.append(own)
+        mt, base = sc.model_type(r)
+        name = sc.model_name(r)
+        if mt == 'LOD':
+            name = ML.lod_model_name(r, name)
+            lods.append(r)
+        elif mt == 'DFF':
+            dffs.append(r)
+            by_base.setdefault(name.lower(), r)
+        names[r.handle], kinds[r.handle] = name, mt.lower()
+    for d in dffs:
+        lod = lodix.partner(d)
+        if lod is not None:
+            owners.setdefault(names[lod.handle].lower(), d)
+        stored = (d.get('lod_ide_name', '') or '').strip()
+        if stored:
+            owners.setdefault(stored.lower(), d)
+    for lod in lods:
+        name = names[lod.handle].lower()
+        if name not in owners:
+            base = sc.model_type(lod)[1].lower()
+            owner = by_base.get(base)
+            if owner is None and settings.get('game', 'SA') in ('III', 'VC'):
+                owner = next((d for d in dffs if len(names[d.handle]) > 3
+                              and names[d.handle][3:].lower() == name[3:]), None)
+            if owner is not None:
+                owners[name] = owner
+    return names, kinds, owners, by_base, own_ides, lodix
+
+
+def _txd_users(sc, names, kinds, owners, own_ides):
+    """IDE and scene users; the core planner excludes only real removals."""
+    from inu_gta_core.img_remove import scene_txd_users, txd_users
+    users, bad = txd_users(_txd_ide_files() + own_ides)
+    dffs, lods = [], []
+    for r in sc.recs:
+        name = names[r.handle]
+        txd = (r.get('txd_name', '') or '').strip()
+        if not name:
             continue
-        for sec in (ide.objects, ide.anims, ide.cars, ide.peds, ide.weaps, ide.hiers):
-            for e in sec:
-                t = (getattr(e, 'txd_name', '') or '').lower()
-                m = (getattr(e, 'model_name', '') or '').lower()
-                if t and m not in ex:
-                    users.setdefault(t, set()).add(m)
-        for e in ide.txdps:                            # txdp: ребёнок, родитель
-            c = (e.txd_name or '').lower()
-            par = (e.parent_txd_name or '').lower()
-            if c and par:                              # ребёнок грузит родителя
-                users.setdefault(par, set()).add('txdp ' + c)
-    sc = ML.Scene()
-    for r in sc.models():
-        m = sc.model_name(r).lower()
-        t = (r.get('txd_name', '') or '').lower()
-        if t and m not in ex:
-            users.setdefault(t, set()).add(m)
-    return users
-
-
-def _lod_entry(it):
-    """Имя LOD-модели пункта: из сцены или (LOD не в сцене) lod_ide_name."""
-    return it['lod_name'] or (it['dff'].get('lod_ide_name', '')
-                              if it['dff'] is not None else '')
+        kind = kinds[r.handle]
+        if kind == 'lod':
+            owner = owners.get(name.lower())
+            lods.append((name, txd, names[owner.handle] if owner is not None else ''))
+        elif kind == 'dff' or (txd and r.get('type', 'OBJ').upper() not in ('COL', 'SHA')):
+            dffs.append((name, txd))
+    for txd, models in scene_txd_users(dffs, lods).items():
+        users.setdefault(txd, set()).update(models)
+    return users, bad
 
 
 def _remove_plan():
-    """{архив: {'entries': [имя записи], 'libs': {запись .col: имя модели},
-    'recs': [Rec], 'kept_txd': [(txd, пример модели)]}} и сообщения."""
-    notes = []
-    items = plan()
-    by_arch = {}
-    for it in items:
-        arch = it['own']
-        if not arch:
-            notes.append("«%s»: not in an IMG (press Verify)" % it['name'])
+    """Core removal plan plus scene records whose DFF is actually scheduled."""
+    from inu_gta_core.img_remove import remove_plan
+    sc = ML.Scene()
+    names, kinds, owners, by_base, own_ides, lodix = _remove_scene(sc)
+    selected, handles = [], set()
+    for node in _selected():
+        r = sc.rec(node)
+        if r is None:
             continue
-        by_arch.setdefault(arch, []).append(it)
-    if not by_arch:
-        return {}, notes
-    removing = {it['name'] for its in by_arch.values() for it in its} | \
-        {_lod_entry(it) for its in by_arch.values() for it in its} - {''}
-    users = _txd_users(removing)
+        # Scene.pick intentionally excludes tagged COL; removal accepts them.
+        if kinds[r.handle] == 'dff':
+            r = sc.main_of(r)
+        if r.handle not in handles:
+            handles.add(r.handle)
+            selected.append(r)
+    selected_lods = {names[r.handle].lower() for r in selected if kinds[r.handle] == 'lod'}
+    notes, parts, arch_of, seen = [], [], {}, set()
+    for r in selected:
+        kind, name = kinds[r.handle], names[r.handle]
+        if not name:
+            continue
+        extra, fallback = {}, ''
+        if kind == 'dff':
+            extra['txd'] = (r.get('txd_name', '') or '').strip() or name
+            lod = lodix.partner(r)
+            lname = names[lod.handle] if lod is not None else r.get('lod_ide_name', '')
+            if lname and lname.lower() not in selected_lods:
+                extra['lod'] = lname
+        elif kind == 'lod':
+            owner = owners.get(name.lower())
+            if owner is not None:
+                fallback = owner.get('img_target_file', '')
+            # No own TXD: inherit the owner's TXD; never touch COL or the HD DFF.
+            owner_txd = ((owner.get('txd_name', '') or '').strip() or names[owner.handle]
+                         if owner is not None else '')
+            extra['txd'] = (r.get('txd_name', '') or '').strip() or owner_txd or name
+        else:
+            owner = by_base.get(name.lower())
+            fallback = owner.get('img_target_file', '') if owner is not None else ''
+        raw = r.get('img_target_file', '')
+        # A LOD without a usable own path falls back to its owner's archive.
+        if kind == 'lod' and not (raw and os.path.isfile(raw)):
+            raw = fallback
+        elif not raw:
+            raw = fallback
+        if not raw or not os.path.isfile(raw):
+            notes.append("«%s»: not in an IMG (press Verify)" % r.name)
+            continue
+        key = _norm(raw)
+        arch = arch_of.setdefault(key, raw)
+        part_key = (key, kind, name.lower())
+        if part_key not in seen:
+            seen.add(part_key)
+            parts.append(dict(kind=kind, arch=arch, name=name, **extra))
     I = _img()
-    out = {}
-    for arch, its in by_arch.items():
-        names = _names_in(arch) or set()
-        ent, libs, recs, kept = [], {}, [], []
-        with I.ImgReader(arch) as rd:
-            col_idx = _col_index(rd)
-        for it in its:
-            if it['dff'] is not None:
-                recs.append(it['dff'])
-                if it['name'].lower() + '.dff' in names:
-                    ent.append(it['name'] + '.dff')
-            if it['lod'] is not None:
-                recs.append(it['lod'])
-            lname = _lod_entry(it)
-            if lname and lname.lower() + '.dff' in names:
-                ent.append(lname + '.dff')
-            for t in {it['txd'], it['lod_txd']} - {''}:
-                if t.lower() + '.txd' not in names or t + '.txd' in ent:
-                    continue
-                others = users.get(t.lower())
-                if others:
-                    kept.append((t, sorted(others)[0], len(others)))
-                else:
-                    ent.append(t + '.txd')
-            for ename in col_idx.get(it['name'].lower(), []):
-                libs.setdefault(ename, []).append(it['name'])
-        out[arch] = dict(entries=ent, libs=libs, recs=recs, kept_txd=kept)
-    return out, notes
+    names_by_arch, col_idx_by_arch = {}, {}
+    for arch in arch_of.values():
+        try:
+            entry_names = {}
+            for e in I.read_directory(arch):
+                entry_names.setdefault(e.name.lower(), e.name)
+            if any(p['arch'] == arch and p['kind'] != 'lod' for p in parts):
+                with I.ImgReader(arch) as rd:
+                    col_idx_by_arch[arch] = _col_index(rd)
+            names_by_arch[arch] = entry_names
+        except Exception as e:                         # noqa: BLE001
+            notes.append("%s: %s" % (_base(arch), e))
+    users = {}
+    if any(p.get('txd') and (p['txd'] + '.txd').lower() in names_by_arch.get(p['arch'], {})
+           for p in parts):
+        users, bad = _txd_users(sc, names, kinds, owners, own_ides)
+        if bad:
+            notes.append("IDE not read: %s" % ', '.join(_base(p) for p in bad))
+    todo = remove_plan(parts, names_by_arch, col_idx_by_arch, users)
+    for arch, t in todo.items():
+        for name in t['missing']:
+            notes.append("«%s»: not in %s (press Verify)" % (name, _base(arch)))
+        gone = {e.lower() for e in t['entries'] if e.lower().endswith('.dff')}
+        t['recs'] = [r for r in sc.recs if kinds[r.handle] in ('dff', 'lod')
+                     and _norm(r.get('img_target_file', '')) == _norm(arch)
+                     and (names[r.handle] + '.dff').lower() in gone]
+        t['rec_entries'] = {r.handle: (names[r.handle] + '.dff').lower() for r in t['recs']}
+    root = settings.get('game_root', '') or ''
+    from inu_gta_core.gta_dat import game_ide_paths
+    if (any(e.lower().endswith('.txd') for t in todo.values() for e in t['entries'])
+            and not (root and os.path.isdir(root) and game_ide_paths(root)[1])):
+        notes.insert(0, "Game folder not set or startup DAT not found — TXD checked only "
+                     "against the scene and IDE lists")
+    return todo, list(dict.fromkeys(notes))
 
 
 def remove_from_img(confirm=None):
     if not _selected():
         return 'ERROR', "Select mesh objects"
-    I = _img()
+    from inu_gta_core.img_remove import remove_entries
     todo, notes = _remove_plan()
     if not todo:
         return 'WARNING', "\n".join(notes or ["Nothing to remove"])
@@ -521,8 +665,10 @@ def remove_from_img(confirm=None):
                                       for e, ms in t['libs'].items()]
         lines.append("%s: %s" % (_base(arch), ", ".join(parts) or "nothing"))
         for tx, ex, cnt in t['kept_txd']:
-            lines.append("  %s.txd kept — used by %s%s" % (tx, ex, (" +%d" % (cnt - 1))
+            lines.append("  %s kept — used by %s%s" % (tx, ex, (" +%d" % (cnt - 1))
                                                            if cnt > 1 else ""))
+        for lod in t['kept_lod']:
+            lines.append("  LOD «%s» kept — select the LOD to remove it" % lod)
     if not any(t['entries'] or t['libs'] for t in todo.values()):
         return 'WARNING', "\n".join(["Files not found in IMG"] + lines + notes)
     if confirm is not None and not confirm(
@@ -531,40 +677,24 @@ def remove_from_img(confirm=None):
         return None
     done, errors = [], []
     for arch, t in todo.items():
+        changed = []
         try:
-            n = 0
-            for ename in t['entries']:
-                if I.remove_file(arch, ename):
-                    n += 1
-            if t['libs']:
-                with I.ImgReader(arch) as rd:
-                    datas = {e: rd.read(e) or b'' for e in t['libs']}
-                gone = []
-                with I.ImgWriter(arch) as w:
-                    for ename, models in t['libs'].items():
-                        data = datas[ename]
-                        left = 1
-                        for m in models:
-                            data, _c, left = col_splice(data, m, lambda _mid: None)
-                        if left:
-                            w.add(ename, data)
-                        else:
-                            gone.append(ename)
-                        n += len(models)
-                for ename in gone:          # библиотека опустела — запись долой
-                    I.remove_file(arch, ename)
-            done.append("%s: removed %d" % (_base(arch), n))
-            _drop_caches(arch)
+            remove_entries(arch, t['entries'], t['libs'], changed)
         except PermissionError:
             errors.append("%s: the .img file is locked — close the game" % _base(arch))
-            continue
         except Exception as e:                         # noqa: BLE001
             errors.append("%s: %s" % (_base(arch), e))
+        if not changed:
             continue
+        n = sum(1 if isinstance(e, str) else len(e[1]) for e in changed)
+        done.append("%s: removed %d" % (_base(arch), n))
+        _drop_caches(arch)
+        gone = {e.lower() for e in changed if isinstance(e, str)}
         with _undo("INU: Remove from IMG"):
             for r in t['recs']:
-                r.put({'img_target_file': ''})
-    level = 'ERROR' if errors and not done else ('WARNING' if errors else 'INFO')
+                if t['rec_entries'][r.handle] in gone:
+                    r.put({'img_target_file': ''})
+    level = 'ERROR' if errors and not done else ('WARNING' if errors or notes else 'INFO')
     return level, "\n".join(done + lines + ["Error: " + e for e in errors] + notes)
 
 

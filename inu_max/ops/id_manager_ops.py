@@ -100,36 +100,42 @@ _IDE_IDS = {}
 def _ids_of_ide(path):
     """ID всех секций IDE (кэш по времени изменения)."""
     try:
-        mt = os.stat(path).st_mtime_ns
+        st = os.stat(path)
+        mt = (st.st_mtime_ns, st.st_size)
     except OSError:
-        return set()
+        return {}
     hit = _IDE_IDS.get(path)
     if hit and hit[0] == mt:
         return hit[1]
-    ids = set()
+    ids = {}
     try:
         from inu_gta_core.ide import read_ide
         ide = read_ide(path)
         for sec in (ide.objects, ide.anims, ide.cars, ide.peds, ide.weaps, ide.hiers):
-            ids |= {int(e.model_id) for e in sec}
+            for e in sec:
+                ids.setdefault(int(e.model_id), set()).add((e.model_name or '').casefold())
     except Exception as e:                             # noqa: BLE001
         print("[INU] IDE ids %s: %r" % (os.path.basename(path), e))
     _IDE_IDS[path] = (mt, ids)
     return ids
 
 
-def _ide_ids(sc):
-    """ID из IDE, с которыми работает пользователь: бокс IDE, список «IDE to
-    export», IDE связанных моделей сцены (решение: Assign их обходит)."""
+def _ide_names_for_scene(sc):
     paths = [settings.get('ide_path', '') or ''] + list(settings.get('ide_sync_list', []) or [])
     paths += [r.get('ide_target_file', '') for r in sc.recs if r.get('ide_linked', False)]
-    ids, seen = set(), set()
-    for p in paths:
-        k = ML.norm(p) if p else ''
-        if k and k not in seen and os.path.isfile(k):
-            seen.add(k)
-            ids |= _ids_of_ide(k)
-    return ids
+    rows, seen = {}, set()
+    for path in paths:
+        key = ML.norm(path) if path else ''
+        if key and key not in seen and os.path.isfile(key):
+            seen.add(key)
+            for mid, names in _ids_of_ide(key).items():
+                rows.setdefault(mid, set()).update(names)
+    return rows
+
+
+def _ide_ids(sc):
+    """IDs of every relevant IDE section, including foreign model holders."""
+    return set(_ide_names_for_scene(sc))
 
 
 def _ide_name(sc, r):
@@ -141,7 +147,7 @@ def _ide_name(sc, r):
 def _models_by_key(sc):
     """(тип, имя модели) → все узлы-модели сцены с этим именем (копии)."""
     out = {}
-    for r in sc.models():
+    for r in sc.recs:
         mt = sc.model_type(r)[0]
         if mt == 'COL':
             continue
@@ -152,22 +158,60 @@ def _models_by_key(sc):
 def _ordered_keys(sc, recs, lodix, with_lods):
     """Модели выделения по порядку: модель, затем её LOD (with_lods — и не
     выделенный LOD из сцены)."""
-    keys = []
+    keys, trailing = [], []
     sel = {r.handle for r in recs}
     for r in recs:
         mt = sc.model_type(r)[0]
         if mt == 'COL':
             continue
         k = (mt, _ide_name(sc, r).lower())
+        if mt == 'LOD':
+            trailing.append(k)
+            continue
         if k not in keys:
             keys.append(k)
-        if mt == 'DFF':
-            lod = lodix.partner(r)
-            if lod is not None and (with_lods or lod.handle in sel):
-                lk = ('LOD', _ide_name(sc, lod).lower())
-                if lk not in keys:
-                    keys.append(lk)
+        lod = lodix.partner(r)
+        if lod is not None and (with_lods or lod.handle in sel):
+            lk = ('LOD', _ide_name(sc, lod).lower())
+            if lk not in keys:
+                keys.append(lk)
+    for k in trailing:
+        if k not in keys:
+            keys.append(k)
     return keys
+
+
+def _own_ide_ids(group, name, sc=None):
+    """Only a row of this model may be reused; another name keeps the ID busy."""
+    own = set()
+    for r in group:
+        path = ML.ide_linked_file(r)
+        rows = _ids_of_ide(path) if path else {}
+        for mid in (r.get('model_id', 0), r.get('ide_last_model_id', 0)):
+            if mid > 0 and rows.get(mid) == {name.casefold()}:
+                own.add(mid)
+    if sc is not None:
+        all_names = _ide_names_for_scene(sc)
+        own = {mid for mid in own if all_names.get(mid) == {name.casefold()}}
+    return own
+
+
+def _own_col_records(sc, key):
+    if key[0] != 'DFF':
+        return []
+    return [r for r in sc.recs if sc.is_col(r) and
+            sc.model_type(r)[1].casefold() == key[1]]
+
+
+def _exclusive_col_ids(sc, key):
+    collisions = _own_col_records(sc, key)
+    ids = {r.get('model_id', 0) for r in collisions} - {0}
+    for r in sc.recs:
+        if r in collisions:
+            continue
+        if (sc.model_type(r)[0], _ide_name(sc, r).casefold()) != key:
+            ids.discard(r.get('model_id', 0))
+    return ids
 
 
 def _fmt_ids(pairs, n=6):
@@ -212,10 +256,14 @@ def assign_models(sc, recs):
     done, reused, left, warn = [], 0, [], []
     for key in keys:
         group = by_key.get(key, [])
-        zero = [r for r in group if r.get('model_id', 0) <= 0]
+        forbidden = ({r.get('model_id', 0) for r in sc.recs
+                      if sc.model_type(r)[0] == 'DFF' and r.get('model_id', 0) > 0}
+                     if key[0] == 'LOD' else set())
+        zero = [r for r in group if r.get('model_id', 0) <= 0 or r.get('model_id', 0) in forbidden]
         if not zero:
             continue
-        have = sorted({r.get('model_id', 0) for r in group if r.get('model_id', 0) > 0})
+        have = sorted({r.get('model_id', 0) for r in group
+                       if r.get('model_id', 0) > 0 and r.get('model_id', 0) not in forbidden})
         name = _ide_name(sc, group[0])
         if have:
             # у копии модели ID уже есть — остальным тот же
@@ -227,16 +275,28 @@ def assign_models(sc, recs):
         else:
             prefer = None
             if key[0] == 'LOD':
-                owner = ML.lod_owner(sc, lodix, group[0])
-                if owner is not None and owner.get('model_id', 0) > 0:
-                    prefer = owner.get('model_id', 0) + 1
-            nid = P.allocate(name, skip, prefer)
+                handles = {r.handle for r in group}
+                owners = [r.get('model_id', 0) for r in sc.models()
+                          if sc.model_type(r)[0] == 'DFF' and
+                          (lodix.partner(r) is not None and lodix.partner(r).handle in handles)
+                          and r.get('model_id', 0) > 0]
+                if owners:
+                    prefer = min(owners) + 1
+            others = _scene_ids(sc, exclude=group)
+            own = _own_ide_ids(group, name, sc) - others - set(P.game)
+            reusable = own | (_exclusive_col_ids(sc, key) - _ide_ids(sc) - set(P.game))
+            if prefer in own and prefer not in P.ids():
+                P.reserve(prefer, name)
+                nid = prefer
+            else:
+                nid = P.allocate(name, skip - reusable, prefer, restart=bool(reusable))
             if nid is None:
                 left.append(name)
                 continue
             skip.add(nid)
             if prefer is not None and nid != prefer:
-                warn.append("«%s»: ID %d is taken — the LOD got %d" % (name, prefer, nid))
+                reason = "is taken" if prefer in P.ids() else "is not in the preset"
+                warn.append("«%s»: ID %d %s — the LOD got %d" % (name, prefer, reason, nid))
             done.append((name, nid))
         for r in zero:
             r.put({'model_id': int(nid)})
@@ -257,9 +317,18 @@ def id_manager_assign_from(start_id=321, skip_occupied=True):
     recs = [r for r in sc.pick(nodes) if sc.model_type(r)[0] != 'COL']
     keys = _ordered_keys(sc, recs, lodix, with_lods=False)
     affected = [r for k in keys for r in by_key.get(k, [])]
+    affected += [r for k in keys for r in _own_col_records(sc, k)]
     old_ids = {r.get('model_id', 0) for r in affected} - {0}
-    used = set(P.used()) | _scene_ids(sc, exclude=affected) | _ide_ids(sc)
-    used -= old_ids - set(P.game) - _scene_ids(sc, exclude=affected) - _ide_ids(sc)
+    others = _scene_ids(sc, exclude=affected)
+    own = set().union(*[_own_ide_ids(by_key.get(k, []), k[1], sc) for k in keys]) if keys else set()
+    ide_foreign = _ide_ids(sc) - own
+    used = set(P.used()) | others | ide_foreign | set(P.game)
+    used -= old_ids - set(P.game) - others - ide_foreign
+    preset_used = P.used()
+    for key in keys:
+        for mid in _own_ide_ids(by_key.get(key, []), key[1], sc):
+            if mid not in P.game and mid not in others and preset_used.get(mid, key[1]).casefold() == key[1]:
+                used.discard(mid)
     cur = max(1, int(start_id))
     done, clashes = [], 0
     with _undo("INU: Assign IDs from"):
@@ -273,7 +342,7 @@ def id_manager_assign_from(start_id=321, skip_occupied=True):
             elif cur in used:
                 clashes += 1
             name = _ide_name(sc, group[0])
-            for r in group:
+            for r in group + _own_col_records(sc, key):
                 r.put({'model_id': int(cur)})
             P.reserve(cur, name)
             used.add(cur)
@@ -315,13 +384,19 @@ def id_manager_clear_selected():
     return 'INFO', "Cleared IDs: %d (freed in preset: %d)" % (len(recs), freed)
 
 
-def id_manager_release(model_id):
+def id_manager_release(model_id, confirm=None):
     """✕ у ID в списке: ID снимается со всех узлов и освобождается в пресете.
     ID игры (From Game) — не освобождается."""
     model_id = int(model_id)
     P = IP.Preset(active())
     if model_id in P.game:
-        return 'WARNING', "ID %d is used by the game (From Game) — not released" % model_id
+        if confirm is None:
+            return 'WARNING', 'ID %d is used by the game — confirmation required' % model_id
+        if not confirm('Release game ID',
+                       ['ID %d belongs to a vanilla model. Reusing it replaces that model in the game.' % model_id],
+                       'Release this ID?'):
+            return None
+        P.game.remove(model_id)
     sc = ML.Scene()
     holders = [r for r in sc.recs if r.get('model_id', 0) == model_id]
     with _undo("INU: Release ID"):
@@ -365,20 +440,14 @@ def id_manager_from_game():
     root = settings.get('game_root', '') or ''
     if not root or not os.path.isdir(root):
         return 'ERROR', "Specify the game root folder (Map IO → Map tab / Import)"
-    from inu_gta_core.gta_dat import parse_gta_dat, resolve_paths
+    from inu_gta_core.gta_dat import game_ide_paths, GAME_DATS
+    from inu_gta_core.fs_ci import resolve
     from inu_gta_core.ide import read_ide
-    ide_paths, dats = [], []
-    for dat in _DATS:
-        p = os.path.join(root, 'data', dat)
-        if not os.path.isfile(p):
-            continue
-        dats.append(dat)
-        try:
-            for q in resolve_paths(root, parse_gta_dat(p)).ide_paths:
-                if q not in ide_paths:
-                    ide_paths.append(q)
-        except Exception as e:                         # noqa: BLE001
-            print("[INU] %s: %r" % (dat, e))
+    ide_paths, dats = game_ide_paths(root)
+    unread_dats = [dat for dat in GAME_DATS if dat not in dats and
+                  os.path.isfile(resolve(os.path.join(root, 'data', dat)))]
+    if not dats and unread_dats:
+        return 'ERROR', 'Not read: ' + ', '.join(unread_dats)
     if not dats:
         return 'ERROR', "No data\\gta.dat / default.dat in %s" % root
     game, bad = {}, []
@@ -397,15 +466,17 @@ def id_manager_from_game():
     P = IP.Preset(active())
     clashes, added = P.mark_game(game)
     P.save()
-    lines = ["Game IDs: %d (%d IDE from %s), new in preset: %d"
+    lines = ["Game IDs: %d (%d IDE from %s), newly used: %d"
              % (len(game), len(ide_paths) - len(bad), ", ".join(dats), added)]
     if clashes:
         lines.append("Your entries on game IDs (renamed to the game model): %d — %s"
                      % (len(clashes), ", ".join("%d %s→%s" % c for c in clashes[:5])
                         + (" …" if len(clashes) > 5 else "")))
+    if unread_dats:
+        lines.append("Not read: " + ", ".join(unread_dats))
     if bad:
         lines.append("IDE not read: %s" % ", ".join(bad[:5]))
-    return ('WARNING' if clashes or bad else 'INFO'), "\n".join(lines)
+    return ('WARNING' if clashes or bad or unread_dats else 'INFO'), "\n".join(lines)
 
 
 def id_manager_create(confirm=None):

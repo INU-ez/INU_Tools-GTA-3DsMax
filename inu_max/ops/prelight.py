@@ -112,14 +112,14 @@ def bake(shadows=False, over=False):
                 env = None
                 if env_src is not None:
                     env = PS.env_sample(env_src, np.asarray(n_c, dtype=np.float32).reshape(-1, 3))
+                old = PS.get_corners(node, chan) if over else None
+                use_over = over and old is not None and len(old) == len(faces) * 3
                 total = PM.light_total(pos, faces, n_c, lamps, sh, model=model,
                                        ambient=ambient, intensity=intensity,
-                                       over=over, env=env)
+                                       over=use_over, env=env)
                 vals = PM.encode(total, model=model, gamma=gamma)
-                if over:
-                    old = PS.get_corners(node, chan)
-                    if old is not None and len(old) == len(vals):
-                        vals = PM.add_over(old, vals)
+                if use_over:
+                    vals = PM.add_over(old, vals)
                 else:
                     # свежий цвет → сдвиг V поля слоя накладывается заново
                     v = PS.v_value(node, layer)

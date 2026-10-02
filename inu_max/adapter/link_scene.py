@@ -17,7 +17,8 @@ global inuLinkIndex
 fn inuLinkIndex = (
     local lnkNodes = #(), lnkHandles = #(), lnkNames = #(), lnkBufs = #()
     local lnkTops = #(), lnkDepths = #()
-    for o in geometry do (
+    for o in geometry where (getUserProp o "inu_preview") != true and
+        (getUserProp o "inu_section") == undefined and (classOf o) != TargetObject do (
         append lnkNodes o
         append lnkHandles o.inode.handle
         append lnkNames o.name

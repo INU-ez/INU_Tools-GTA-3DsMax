@@ -3,7 +3,6 @@
 # Чистый диспетчер: импортирует РОВНО выбранные файлы, каждый по своему типу,
 # в порядке TXD → DFF → COL → CST → IDE → IPL. Текстуры из выбранных .txd
 # уходят в DFF этого же импорта. Реализованы TXD, DFF, COL и CST; IDE и IPL
-# пока перечисляются в отчёте как ещё не поддержанные.
 
 import os
 
@@ -50,9 +49,14 @@ def import_files(paths, auto_txd=True):
                 traceback.print_exc()
                 lines.append("%s %s: error %s" % (kind, os.path.basename(p), e))
 
-    todo = [os.path.basename(p) for e in ('.ide', '.ipl') for p in by_ext[e]]
-    if todo:
-        lines.append("Not supported yet: " + ", ".join(todo))
+    from .ipl_tools import import_ide, import_ipl
+    for ext, fn in (('.ide', import_ide), ('.ipl', import_ipl)):
+        for path in by_ext[ext]:
+            try:
+                level, text = fn(path)
+                lines.append('%s %s: %s' % (ext[1:].upper(), os.path.basename(path), text))
+            except Exception as error:
+                lines.append('%s %s: error %s' % (ext[1:].upper(), os.path.basename(path), error))
     if other:
         lines.append("Unknown type: " + ", ".join(os.path.basename(p) for p in other))
     return "\n".join(lines) or "Nothing imported."

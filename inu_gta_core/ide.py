@@ -214,6 +214,20 @@ def _tokens(line: str) -> list:
     return line.replace(',', ' ').split()
 
 
+def _data_tokens(line: str) -> list:
+    """``_tokens`` without a trailing ``# comment``.
+
+    The game's ``sscanf`` reads only its own fields and ignores the rest
+    of the line (III ``default.ide`` peds 39/40: ``..., 0<TAB># dont move
+    this``), but the peds/cars parsers pick the game by token count, so
+    the comment words must not be counted."""
+    parts = _tokens(line)
+    for i, t in enumerate(parts):
+        if t.startswith('#'):
+            return parts[:i]
+    return parts
+
+
 _INT_PREFIX_RE = re.compile(r'[-+]?\d+')
 
 
@@ -369,7 +383,7 @@ def _parse_car_line(line: str) -> Optional[IdeCar]:
     best-effort SA-style parse — matches the legacy behaviour where
     short lines were tolerated.
     """
-    parts = _tokens(line)
+    parts = _data_tokens(line)
     n = len(parts)
     if n < 10:
         return None
@@ -447,7 +461,7 @@ def _parse_ped_line(line: str) -> Optional[IdePed]:
     Short / unrecognised line counts fall through to best-effort SA
     parse (matches legacy tolerance).
     """
-    parts = _tokens(line)
+    parts = _data_tokens(line)
     n = len(parts)
     if n < 7:
         return None

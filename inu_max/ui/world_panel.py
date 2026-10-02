@@ -5,7 +5,6 @@
 # строками, новая зона, строки в буфер обмена, счётчик, правка параметров);
 # вода — Add Water, Apply параметров на выделенные, сведения об активной
 # воде; пути — атрибуты sapath_*, выделение Peds / Vehs / All, Pick / Apply /
-# Bulk, сведения о пути. Остальное — окна с опциями INU и заглушки: импорт /
 # экспорт воды (нужны данные на вершинах), инструменты воды, файлы путей,
 # рендер радара.
 
@@ -57,14 +56,14 @@ def _vbox(w, spacing=3):
 
 
 class _Tool(BuildMixin, QtWidgets.QWidget):
-    """Основа окна: заглушки кнопок и окно выбора файлов."""
+    """Shared action and file dialog helpers."""
 
     def __init__(self, dispatch, parent=None):
         super().__init__(parent)
         self._dispatch = dispatch
         self._node = None
 
-    def _stub(self, label, key):
+    def _action(self, label, key):
         return lambda: self._dispatch(label, key)
 
     def _file(self, title, mode, filters, key, accept, filename='', options=None,
@@ -83,10 +82,6 @@ class _Tool(BuildMixin, QtWidgets.QWidget):
         files = dlg.selected_files()
         return files if mode == 'open_multi' else (files[0] if files else None)
 
-    def _not_yet(self, what, path=''):
-        QtWidgets.QMessageBox.information(
-            self, "INU Tools", "%s is not implemented yet.%s"
-            % (what, ("\n\n" + path) if path else ""))
 
     def _report(self, msg, err=False):
         if err:
@@ -107,7 +102,7 @@ class WaterTools(_Tool):
     def __init__(self, dispatch, parent=None):
         super().__init__(dispatch, parent)
         lay = _vbox(self)
-        stub = self._stub
+        stub = self._action
         lay.addWidget(FusedBlock([
             [_btn("Import", self._import, "Import water.dat", 'import'),
              _btn("Export", self._export, "Export water.dat", 'export')],
@@ -187,13 +182,13 @@ class WaterTools(_Tool):
     def _import(self):
         path = self._file("INU: Import Water", 'open', _DAT, 'water', "Import")
         if path:
-            self._not_yet("Water import", path)
+            self._dispatch("Water import", 'import_water', path=path)
 
     def _export(self):
         path = self._file("INU: Export Water", 'save', _DAT, 'water', "Export",
                           "water.dat")
         if path:
-            self._not_yet("Water export", path)
+            self._dispatch("Water export", 'export_water', path=path)
 
     def _add(self):
         node = _safe(lambda: _world().add_water())
@@ -400,7 +395,7 @@ class PathTools(_Tool):
         self._refresh_sel = refresh
         self._clip = {}              # буфер Pick / Apply (sapath_*)
         lay = _vbox(self)
-        stub = self._stub
+        stub = self._action
         self._convert = _btn("Convert to Path", stub("Convert to Path",
                                                      "convert_to_path"),
                              "Convert a spline or mesh edges into a paths.ipl path",
@@ -428,11 +423,8 @@ class PathTools(_Tool):
         menu = QtWidgets.QMenu(traffic)
         menu.setToolTipsVisible(True)
         for label, key, tip in (
-                ("No traffic light", 'TRAFFIC_NONE', "traffic_light=0 on each "
-                 "selected point"),
-                ("Normal", 'TRAFFIC_NORMAL', "traffic_light=1 on each selected point"),
-                ("Railroad", 'TRAFFIC_RAIL', "traffic_light=2 on each selected point"),
-                ("Bus", 'TRAFFIC_BUS', "traffic_light=3 on each selected point")):
+                ("Disabled (toggle)", 'TOGGLE_DISABLED', "Toggle IPL flag bit 0"),
+                ("Between levels (toggle)", 'TOGGLE_BETWEEN_LEVELS', "Toggle VC IPL flag bit 2")):
             act = menu.addAction(label)
             act.setToolTip(tip)
             act.triggered.connect(lambda _c=False, l=label, k=key:
@@ -440,7 +432,7 @@ class PathTools(_Tool):
         traffic.setMenu(menu)
         fl.addWidget(FusedBlock([
             [_btn("Toggle Roadblock", stub("Toggle Roadblock", "TOGGLE_ROADBLOCK"),
-                  "Toggle bit 12 (cop barrier) on each selected point")],
+                  "Toggle IPL flag bit 1 on selected knots")],
             [traffic]]))
         b.addWidget(self._flags)
         lay.addWidget(b.box)
@@ -475,10 +467,10 @@ class PathTools(_Tool):
         b.addWidget(IconLabel("Compiled (NODES):", 'archive'))
         b.addWidget(FusedBlock([
             [_btn("Import", self._import_nodes,
-                  "Import nodes.dat — pedestrian / vehicle paths (multi-select)",
+                  "Import Compiled NODES as Editable Poly with stable vertex IDs and graph edges",
                   'import'),
              _btn("Export", self._export_nodes,
-                  "Export nodes.dat — group by filename or auto-split by zones",
+                  "Export selected imported regions and new bare node meshes; merge by region",
                   'export')],
             [_btn("Path geometry", stub("Path geometry", "toggle_nodes_viz"),
                   "Create or hide path visualisation geometry", 'eye')]]))
@@ -524,11 +516,11 @@ class PathTools(_Tool):
              _btn("Sync", stub("Sync", "start_accessory_sync"),
                   "Enable background sync of path accessory positions with "
                   "their parent splines")],
-            [_btn("Node IDs", stub("Node IDs", "toggle_path_debug"),
+            [_btn("Node IDs", lambda: self._dispatch('Node IDs','toggle_path_debug',mode='NODE'),
                   "Toggle the path debug overlay: NodeID labels on nodes"),
-             _btn("Navi IDs", stub("Navi IDs", "toggle_path_debug"),
+             _btn("Navi IDs", lambda: self._dispatch('Navi IDs','toggle_path_debug',mode='NAVI'),
                   "Toggle the path debug overlay: navi node IDs"),
-             _btn("Off", stub("Debug overlay off", "toggle_path_debug"),
+             _btn("Off", lambda: self._dispatch('Debug overlay off','toggle_path_debug',mode='OFF'),
                   "Turn the path debug overlay off")]], pad=2))
         # атрибуты активной кривой
         ab = self._box(margins=(4, 3, 4, 4))
@@ -622,13 +614,14 @@ class PathTools(_Tool):
     def _io(self, what, mode, filters, key, accept, filename=''):
         path = self._file("INU: " + what, mode, filters, key, accept, filename)
         if path:
-            self._not_yet(what, path if isinstance(path, str) else "\n".join(path))
+            operation = ('import_' if mode == 'open' else 'export_') + ('paths_ipl' if key == 'paths_ipl' else 'track')
+            self._dispatch(what, operation, path=path)
 
     def _import_nodes(self):
         paths = self._file("INU: Import Path Nodes", 'open_multi', _DAT, 'nodes',
                            "Import")
         if paths:
-            self._not_yet("Nodes import", "\n".join(paths))
+            self._dispatch('Nodes import', 'import_nodes', paths=paths)
 
     def _export_nodes(self):
         opts = _Opts("Export nodes")
@@ -636,10 +629,16 @@ class PathTools(_Tool):
             "FLA4 Format", 'nodes_fla4', False,
             "Write nodes*.dat in the extended FLA4 format (spawn/speed/lanes "
             "per-node)"))
+        opts.body.addWidget(IconLabel(
+            "Edit vertices and edges directly in imported Editable Poly meshes. "
+            "Select all 64 imported regions when node IDs change. "
+            "Additional bare node meshes are merged without creating connections. "
+            "Older scenes require reimport to initialize persistent identities.",
+            'info', wrap=True))
         folder = self._file("INU: Export Path Nodes", 'folder', None, 'nodes',
                             "Export", options=opts)
         if folder:
-            self._not_yet("Nodes export", folder)
+            self._dispatch('Nodes export', 'export_nodes', folder=folder)
 
     def _curves_to_dat(self):
         opts = _Opts("Curves → .dat")
@@ -659,7 +658,7 @@ class PathTools(_Tool):
         path = self._file("INU: Curves → nodes*.dat", 'save', _DAT, 'nodes',
                           "Export", "NODES0.DAT", options=opts)
         if path:
-            self._not_yet("Curves → nodes*.dat", path)
+            self._dispatch('Curves → nodes*.dat', 'curves_to_dat', path=path)
 
     def _select(self, kind):
         n = _safe(lambda: _world().select_nodes(_world().path_shapes(kind)), 0)
@@ -769,8 +768,8 @@ class RadarTools(_Tool):
         lay.addLayout(self._labeled("Folder", self._path_field(
             'radar_output', 'folder', title="INU: Radar output folder",
             tip="Folder for saving radar tiles"), 40))
-        lay.addWidget(self._int('radar_grid', 8, IntEdit(
-            1, 16, "Grid: ", "Grid size (8 = 64 tiles)")))
+        lay.addWidget(self._int('radar_grid', 0, IntEdit(
+            0, 16, "Grid: ", "0 = game default: SA 12×12, III/VC 8×8")))
         lay.addWidget(self._int('radar_size', 256, IntEdit(
             64, 4096, "Size: ", "Tile size in pixels")))
         h = NumEdit(1, 100.0, 1e6, 100.0, "Height: ", "Camera height")
@@ -811,7 +810,7 @@ class RadarTools(_Tool):
             return self._report("Enter tile indices (e.g. 0,1,8,9)", True)
         if not str(self._get('radar_output', '') or '').strip():
             return self._report("Set the output folder", True)
-        self._dispatch(label, "radar_generate")
+        self._dispatch(label, "radar_generate", mode=mode)
 
     def _pack(self):
         if not str(self._get('radar_output', '') or '').strip():

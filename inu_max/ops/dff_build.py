@@ -163,6 +163,13 @@ def uv_anim_dict(materials):
         if name in seen:
             continue
         seen.add(name)
+        if p.get('uv_anim_mode') == 'KEYFRAME':
+            keys = [UVAnimKeyframe(**k) for k in p.get('uv_keyframes', [])]
+            if not keys:
+                raise ValueError('%s: no sampled UV keyframes' % name)
+            anims.append(UVAnim(name=name, type_id=0x1C1,
+                               duration=max(.01, keys[-1].time), keyframes=keys))
+            continue
         dur = max(0.01, float(p.get('uv_anim_duration', 1.0)))
         su, sv = float(p.get('uv_anim_speed_u', 0.0)), float(p.get('uv_anim_speed_v', 0.0))
         anims.append(UVAnim(name=name, type_id=0x1C1, duration=dur, keyframes=[
@@ -173,16 +180,20 @@ def uv_anim_dict(materials):
 
 
 def keyframe_uv_materials(materials):
-    """Имена материалов с UV-анимацией в режиме «Keyframes»: в Max он ещё не
-    сделан — uv_anim_dict пишет им прокрутку Speed U/V (для предупреждения)."""
+    """UV Keyframes materials with no sampled keys."""
     out = []
     for md in materials:
         p = md.props or {}
-        if p.get('uv_anim_write') and p.get('uv_anim_mode') == 'KEYFRAME':
+        if p.get('uv_anim_write') and p.get('uv_anim_mode') == 'KEYFRAME' and not p.get('uv_keyframes'):
             name = md.name or p.get('animation_name') or 'uvanim'
             if name not in out:
                 out.append(name)
     return out
+
+
+def uv_anim_materials(materials):
+    return list(dict.fromkeys(md.name or (md.props or {}).get('animation_name') or 'uvanim'
+                             for md in materials if (md.props or {}).get('uv_anim_write')))
 
 
 # ── геометрия ────────────────────────────────────────────────────────
@@ -388,8 +399,11 @@ def fx_entry(effect, v, loc, esc=None):
 
 # ── клапм ────────────────────────────────────────────────────────────
 
-def _frame(node: ExportNode) -> DffFrame:
-    name = node.name.strip()
+def _frame(node: ExportNode, taken=frozenset()) -> DffFrame:
+    from .frames import game_frame_name
+    original = node.name.strip()
+    cleaned = game_frame_name(original)
+    name = original if cleaned.casefold() != original.casefold() and cleaned.casefold() in taken else cleaned
     if len(name.encode('ascii', 'replace')) > FRAME_NAME_MAX:
         raise ExportError("Frame name '%s' is longer than %d characters — the "
                           "game stores it in a 24-byte slot and crashes. Rename "
@@ -530,10 +544,13 @@ def build_clump(nodes: List[ExportNode], version=GTA_SA_VERSION,
     2DFX — на последнюю геометрию + Omni-фреймы у света. Меш со скином —
     SkinPLG, а у первой кости — таблица HAnim всего скелета."""
     clump = DffClump(version=version)
+    taken = {n.name.strip().casefold() for n in nodes}
     for i, n in enumerate(nodes):
         if n.parent >= i:
             raise ExportError("Internal: node '%s' comes before its parent" % n.name)
-        clump.frames.append(_frame(n))
+        frame = _frame(n, taken)
+        clump.frames.append(frame)
+        taken.add(frame.name.casefold())
     all_mats, fx = [], list(fx or [])
     meshes = sorted((i for i, n in enumerate(nodes)
                      if n.kind == 'MESH' and n.mesh is not None and n.mesh.faces),
@@ -572,6 +589,6 @@ def build_clump(nodes: List[ExportNode], version=GTA_SA_VERSION,
                     frame_index=len(clump.frames) - 1,
                     radius=e.pointlight_range * 10.0,
                     color=(e.color.r / 255.0, e.color.g / 255.0, e.color.b / 255.0)))
-    clump.uv_anim_dict = uv_anim_dict(all_mats)
+    clump.uv_anim_dict = uv_anim_dict(all_mats) if version >= 0x35000 else None
     clump.collision_data = collision or b''
     return clump

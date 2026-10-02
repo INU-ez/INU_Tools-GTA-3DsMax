@@ -46,6 +46,7 @@ _DEFAULTS = {
     'txd_shared_name': 'textures',
     'txd_merge': False,         # дописать в существующий .txd
     'dxt_backend': 'numpy',     # 'numpy' | 'numpy_fast'
+    'pipe_flag_defaults': {},
     'export_pipeline': 'NONE',  # NONE | 0x53F2009A | 0x53F20098 | 0x53F2009C | PED
     'export_vertex_alpha': False,
     'export_to_img': False,     # All → IMG (путь img_path)
@@ -219,7 +220,7 @@ _DEFAULTS = {
     'surf_all_selected': False,     # пикер поверхности: ко всем COL
     # — X Radar Maker —
     'radar_output': '',
-    'radar_grid': 8,
+    'radar_grid': 0,
     'radar_size': 256,
     'radar_height': 3000.0,
     'radar_specific': '',

@@ -102,6 +102,16 @@ def _adaptive(base, pts, max_per, min_size):
     return out
 
 
+def _top_layer(node):
+    layer = node.layer
+    for _ in range(64):
+        parent = layer.getParent()
+        if parent is None or str(parent.name) == '0':
+            break
+        layer = parent
+    return 'unsorted' if str(layer.name) == '0' else str(layer.name)
+
+
 def _cells(sc, dffs, opts):
     """[ключ ячейки] на каждую расстановку."""
     base = _safe(opts['base_name'])
@@ -110,7 +120,7 @@ def _cells(sc, dffs, opts):
         out = []
         for r in dffs:
             try:
-                out.append(_safe(str(r.node.layer.name)) or 'unsorted')
+                out.append(_safe(_top_layer(r.node)) or 'unsorted')
             except Exception:                          # noqa: BLE001
                 out.append('unsorted')
         return out
@@ -149,7 +159,7 @@ def export_map(folder, opts, confirm=None):
     need = [r for r in dffs if r.get('model_id', 0) <= 0]
     need += [l for l in (lodix.partner(r) for r in dffs) if l is not None
              and l.get('model_id', 0) <= 0]
-    if need:
+    if need and (opts.get('ide') or opts.get('ipl')):
         from .id_manager_ops import assign_models
         with undo_block("INU: Export Map IDs"):
             done, _reused, left, warn = assign_models(sc, need)
@@ -172,9 +182,47 @@ def export_map(folder, opts, confirm=None):
             lod_txd = ((lod.get('txd_name', '') or '').strip() if lod is not None else '') or txd
             models[key] = dict(name=nm, dff=r, lod=lod, meshes=meshes, prims=prims, txd=txd,
                                lod_txd=lod_txd,
-                               lod_name=ML.lod_model_name(lod, sc.model_type(lod)[1])
+                               lod_name=ML.lod_model_name(lod, sc.model_type(lod)[1], hd=nm, game=game, sc=sc)
                                if lod is not None else '')
             home[key] = cell
+    canonical_ids = {}
+    for r in dffs:
+        key = sc.model_name(r).casefold()
+        mid = r.get('model_id', 0)
+        if mid > 0:
+            canonical_ids[key] = min(mid, canonical_ids.get(key, mid))
+    for key, model in models.items():
+        ids = sorted({r.get('model_id', 0) for r in dffs
+                      if sc.model_name(r).casefold() == key and r.get('model_id', 0) > 0})
+        if len(ids) > 1:
+            warnings.append('«%s»: copies have different IDs (%s) — exported with %d' %
+                            (model['name'], ', '.join(map(str, ids)), ids[0]))
+        lod = model['lod']
+        if lod is not None:
+            le = ML.lod_inst_for(sc, model['dff'], lod, model['name'])
+            if le.model_id in canonical_ids.values() or ML._lod_is_model(le, ML.ipl_entry(sc, model['dff'])):
+                warnings.append('«%s»: LOD has an exported model ID/name — skipped' % model['name'])
+                model['lod'] = None
+            else:
+                note = ML.lod_name_note(lod, model['lod_name'], model['name'], game=game, sc=sc)
+                if note:
+                    warnings.append(note)
+        for r in dffs:
+            if sc.model_name(r).casefold() == key and lodix.partner(r) is not model['lod'] and lodix.partner(r) is not None:
+                warnings.append('«%s»: different LOD on a copy — exported with the first model LOD' % r.name)
+    class ModelLods:
+        ids = canonical_ids
+        def partner(self, r):
+            return models.get(sc.model_name(r).casefold(), {}).get('lod')
+    lodix = ModelLods()
+    lod_home = {}
+    for key, model in models.items():
+        lod_key = model['lod_name'].casefold()
+        if model['lod'] is not None:
+            lod_home.setdefault(lod_key, home[key])
+            model['write_lod_ide'] = lod_home[lod_key] == home[key]
+        else:
+            model['write_lod_ide'] = False
     multi = len(set(cells)) > 1
     out_dir = {c: (os.path.join(folder, c) if multi else folder) for c in set(cells)}
     # 3. что будет записано
@@ -257,23 +305,35 @@ def _ipl_rows(sc, lodix, rows, pair):
     (LOD в конце, lod_index — на них); pair=True — модели отдельно, lod_index
     — индекс в списке LOD (текстовом файле пары)."""
     import copy
-    mains, lods, seen = [], [], set()
+    mains, lods, seen, lod_seen = [], [], set(), {}
     dup = 0
+    canonical_lods = {}
+    canonical_ids = dict(getattr(lodix, 'ids', {}))
+    for r in rows:
+        name = sc.model_name(r).casefold()
+        canonical_lods.setdefault(name, lodix.partner(r))
+        mid = r.get('model_id', 0)
+        if mid > 0 and not hasattr(lodix, 'ids'):
+            canonical_ids[name] = min(mid, canonical_ids.get(name, mid))
     for r in rows:
         e = ML.ipl_entry(sc, r)
+        e.model_id = canonical_ids.get(sc.model_name(r).casefold(), e.model_id)
         key = (e.model_id, round(e.pos_x, 3), round(e.pos_y, 3), round(e.pos_z, 3))
         if key in seen:
             dup += 1
             continue
         seen.add(key)
         e.lod_index = -1
-        lod = lodix.partner(r)
+        lod = canonical_lods[sc.model_name(r).casefold()]
         if lod is not None:
             le = ML.lod_inst_for(sc, r, lod, sc.model_type(r)[1])
-            if le.model_id > 0:
+            if le.model_id > 0 and le.model_id not in canonical_ids.values() and not ML._lod_is_model(le, e):
                 le.lod_index = -1
-                lods.append(copy.copy(le))
-                e.lod_index = len(lods) - 1
+                lk = (le.model_id, round(le.pos_x, 3), round(le.pos_y, 3), round(le.pos_z, 3))
+                if lk not in lod_seen:
+                    lod_seen[lk] = len(lods)
+                    lods.append(copy.copy(le))
+                e.lod_index = lod_seen[lk]
         mains.append(e)
     if not pair:
         off = len(mains)
@@ -323,7 +383,12 @@ def _write_one(path, kind, obj, sc, lodix, opts, ox, game, warnings, counts, DE,
                 recs.append(m['lod'])
         rep = ML.Report()
         entries, seen = [], set()
+        allowed_lods = {m['lod_name'].casefold() for m in obj if m.get('write_lod_ide', True)}
         for _r, e, _p in ML.ide_entries(sc, recs, rep):
+            if sc.model_type(_r)[0] == 'LOD' and e.model_name.casefold() not in allowed_lods:
+                continue
+            if sc.model_type(_r)[0] == 'DFF':
+                e.model_id = getattr(lodix, 'ids', {}).get(e.model_name.casefold(), e.model_id)
             if e.model_name.lower() not in seen:
                 seen.add(e.model_name.lower())
                 entries.append(e)

@@ -260,8 +260,8 @@ def add_zone(path):
 def rename(o, name):
     """Имя зоны → поле и имя бокса «Zone_<имя>» (пробелы → «_»: движок
     делит строку по пробелам)."""
-    name = name.replace(' ', '_')
-    if not name:
+    name = '_'.join(str(name).replace(',', ' ').split())
+    if not name or not is_zone(o):
         return
     with _undo("INU: Rename zone"):
         put_field([o], 'zon_name', name)
