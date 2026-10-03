@@ -170,3 +170,17 @@ class MissingPipTests(unittest.TestCase):
              patch.object(SU.subprocess, 'Popen', return_value=failed), \
              patch.object(SU.urllib.request, 'urlopen', side_effect=OSError('offline')):
             self.assertEqual(SU.install_numpy(log=lambda line: None), (False, 'offline'))
+
+
+class MenuBootstrapTests(unittest.TestCase):
+    def test_every_macro_resolves_global_launcher_and_recovers_startup(self):
+        macros = SU._macros_mcr()
+        self.assertEqual(macros.count('global INU_launch'), len(SU.WINDOWS))
+        self.assertEqual(macros.count('if doesFileExist startup do fileIn startup'), len(SU.WINDOWS))
+        self.assertIn(r'Contents\\scripts\\INU_Startup.ms', macros)
+        self.assertNotIn('is not loaded: restart', macros)
+        self.assertNotIn('messageBox', macros)
+        self.assertIn('[INU Tools] Startup failed:', macros)
+        launcher = Path('inu_launcher.ms').read_text(encoding='utf-8')
+        self.assertIn('global INU_launch', launcher)
+        self.assertIn('global INU_boot', launcher)

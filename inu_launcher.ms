@@ -9,6 +9,8 @@
 -- Папка INU — та, где лежит этот файл (путь вручную задавать не нужно).
 
 global INU_ROOT = pathConfig.removePathLeaf (getThisScriptFilename())
+global INU_boot
+global INU_launch
 global INU_LAUNCHER_NO_OPEN
 
 fn INU_boot = (

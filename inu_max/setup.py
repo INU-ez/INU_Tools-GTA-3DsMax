@@ -239,13 +239,22 @@ def _macros_mcr():
     out = ['-- INU Tools: окна INU для меню «INU Tools» и панелей инструментов.',
            '-- Файл пишет установщик INU (inu_max/setup.py) — вручную не править.', '']
     for macro, label, mode in WINDOWS:
-        out.append('''macroScript %s
+        out.append(r'''macroScript %s
     category:"INU Tools" internalCategory:"INU_Tools"
     buttonText:"%s" tooltip:"INU Tools: %s"
 (
     on execute do (
+        global INU_launch
+        if INU_launch == undefined do (
+            local startup = pathConfig.appendPath (getEnvVariable "APPDATA") "Autodesk\\ApplicationPlugins\\INU_Tools.bundle\\Contents\\scripts\\INU_Startup.ms"
+            try (
+                if doesFileExist startup do fileIn startup
+            ) catch (
+                format "[INU Tools] Startup failed: %%\n" (getCurrentException())
+            )
+        )
         if INU_launch != undefined then INU_launch "%s"
-        else messageBox "INU Tools is not loaded: restart 3ds Max." title:"INU Tools"
+        else format "[INU Tools] Launcher could not be loaded. Run inu_launcher.ms and use Install / Update INU.\n"
     )
 )
 ''' % (macro, label, label, mode))
