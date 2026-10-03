@@ -80,6 +80,8 @@ The port excludes Blender-specific Texture Bake, geometry nodes and live preview
 
 To update, replace the source folder's files and click **Update INU** again. If you use multiple Max releases, run installation from each release that needs NumPy. You do not need to copy the launcher into Startup manually.
 
+**Internet access:** installation needs access to PyPI to download NumPy if it is missing from the current Max Python environment. If `pip` is also missing, the installer automatically downloads a temporary pip, verifies its checksum and removes the temporary files after installation. If NumPy is already available, dependency installation does not need internet access; the installed tools run locally.
+
 **Development mode:** run `run_inu.py` through Python in Max to open the launcher window and reload `inu_max` / `inu_gta_core` modules.
 
 ## 🧪 Compatibility

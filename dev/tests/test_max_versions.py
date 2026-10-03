@@ -134,3 +134,39 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(SU.status()['state'], 'UPDATE')
             manifest['schema'] = SU.INSTALL_SCHEMA
             self.assertEqual(SU.status()['state'], 'INSTALLED')
+
+
+class MissingPipTests(unittest.TestCase):
+    def test_missing_pip_uses_verified_temporary_wheel_and_cleans_up(self):
+        import hashlib
+        import io
+        data = b'test wheel'
+        metadata = {'urls': [{'filename': 'pip-25.3-py3-none-any.whl',
+                             'url': 'https://files.pythonhosted.org/pip.whl',
+                             'digests': {'sha256': hashlib.sha256(data).hexdigest()}}]}
+        failed = Mock(stdout=True, returncode=1)
+        failed.communicate.return_value = (b'No module named pip',)
+        success = Mock(stdout=True, returncode=0)
+        success.communicate.return_value = (b'Installed numpy',)
+        with tempfile.TemporaryDirectory() as destination:
+            with patch.object(SU, 'max_python', return_value='Max Python.exe'), \
+                 patch.object(SU, 'libs_dir', return_value=destination), \
+                 patch.object(SU.subprocess, 'Popen', side_effect=[failed, success]) as popen, \
+                 patch.object(SU.urllib.request, 'urlopen', side_effect=[
+                     io.BytesIO(json.dumps(metadata).encode()), io.BytesIO(data)]):
+                ok, _ = SU.install_numpy(log=lambda line: None)
+                self.assertTrue(ok)
+                command = popen.call_args_list[1].args[0]
+                self.assertEqual(command[0], 'Max Python.exe')
+                self.assertIn('--target', command)
+                self.assertFalse(os.path.exists(command[3]))
+            if destination in SU.sys.path:
+                SU.sys.path.remove(destination)
+
+    def test_network_error_is_reported(self):
+        failed = Mock(stdout=True, returncode=1)
+        failed.communicate.return_value = (b"No module named 'pip'",)
+        with patch.object(SU, 'max_python', return_value='Max Python.exe'), \
+             patch.object(SU.subprocess, 'Popen', return_value=failed), \
+             patch.object(SU.urllib.request, 'urlopen', side_effect=OSError('offline')):
+            self.assertEqual(SU.install_numpy(log=lambda line: None), (False, 'offline'))

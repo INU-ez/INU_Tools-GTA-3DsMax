@@ -13,12 +13,15 @@
 #   • numpy                  — в пакет через pip Max, только если его нет.
 # После установки нужен перезапуск Max.
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import tempfile
+import urllib.request
 import uuid
 
 from .version import VERSION
@@ -308,17 +311,41 @@ def install_numpy(log=print, wait=None):
     spec = 'numpy>=2.1,<3' if sys.version_info >= (3, 13) else 'numpy==1.26.4'
     cmd = [py, '-m', 'pip', 'install', '--disable-pip-version-check',
            '--no-warn-script-location', '--upgrade', '--target', libs_dir(), spec]
-    log("[INU setup] %s" % " ".join(cmd))
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    def run(command):
+        log("[INU setup] %s" % " ".join(command))
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    except OSError as e:
+        if wait is not None:
+            wait(proc)
+        output = proc.communicate()[0].decode('utf-8', 'replace') if proc.stdout else ''
+        return proc.returncode, output
+
+    try:
+        code, out = run(cmd)
+        if code and ("No module named pip" in out or "No module named 'pip'" in out):
+            log("[INU setup] Max has no pip; using a temporary verified pip wheel")
+            # pip 25.3 supports all Max 2023–2026 Python versions (3.9+).
+            # Run it from a temporary wheel; leave Max's Python installation intact.
+            with tempfile.TemporaryDirectory(prefix='inu-pip-') as temporary:
+                with urllib.request.urlopen('https://pypi.org/pypi/pip/25.3/json', timeout=30) as response:
+                    metadata = json.load(response)
+                wheel = next(item for item in metadata['urls']
+                             if item['filename'] == 'pip-25.3-py3-none-any.whl')
+                if not wheel['url'].startswith('https://files.pythonhosted.org/'):
+                    raise ValueError('Unexpected pip download host')
+                with urllib.request.urlopen(wheel['url'], timeout=60) as response:
+                    data = response.read()
+                if hashlib.sha256(data).hexdigest() != wheel['digests']['sha256']:
+                    raise ValueError('pip wheel checksum mismatch')
+                wheel_path = os.path.join(temporary, wheel['filename'])
+                with open(wheel_path, 'wb') as stream:
+                    stream.write(data)
+                script = "import sys,runpy;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('pip',run_name='__main__')"
+                code, out = run([py, '-c', script, wheel_path] + cmd[3:])
+        if code:
+            return False, out.strip().splitlines()[-1] if out.strip() else "pip failed"
+    except (OSError, ValueError, KeyError, StopIteration) as e:
         return False, str(e)
-    if wait is not None:
-        wait(proc)
-    out = proc.communicate()[0].decode('utf-8', 'replace') if proc.stdout else ''
-    if proc.returncode != 0:
-        return False, out.strip().splitlines()[-1] if out.strip() else "pip failed"
     if libs_dir() not in sys.path:
         sys.path.insert(0, libs_dir())
     return True, spec
