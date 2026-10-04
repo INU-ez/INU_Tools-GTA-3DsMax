@@ -24,8 +24,10 @@ def _ensure_paths():
     libs = os.path.join(os.environ.get('APPDATA') or '', 'Autodesk', 'ApplicationPlugins',
                         'INU_Tools.bundle', 'Contents', 'python_libs',
                         'py%d%d' % sys.version_info[:2])
-    if os.path.isdir(libs) and libs not in sys.path:
-        sys.path.append(libs)
+    if os.path.isdir(libs):
+        if libs in sys.path:
+            sys.path.remove(libs)
+        sys.path.insert(0, libs)
 
 
 def _reload_inu_max():

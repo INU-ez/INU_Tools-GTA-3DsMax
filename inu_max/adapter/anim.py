@@ -40,6 +40,13 @@ def skeleton_root(node):
     или None."""
     if node is None:
         return None
+    from .selection import get_field, node_by_handle
+    owner = get_field(node, 'ik_control_root', 0) or get_field(node, 'ik_root', 0)
+    if owner:
+        if get_field(node,'ik_schema',0)>=2:
+            return node_by_handle(owner)
+        candidate = _rt().getAnimByHandle(owner)
+        return candidate if candidate is not None and _rt().isValidNode(candidate) else None
     root, items = hierarchy(node, limit=_SKELETON_SCAN)
     for o, _d in items:
         if node_kind(o) == 'BONE' or \

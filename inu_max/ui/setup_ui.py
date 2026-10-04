@@ -61,6 +61,11 @@ def install_interactive(parent=None):
              "Installation failed:\n%s: %s" % (type(e).__name__, e)).exec()
         return False
     QtWidgets.QApplication.restoreOverrideCursor()
+    if any(line.startswith("numpy NOT installed:") for line in report):
+        _box(parent, QtWidgets.QMessageBox.Warning, "INU Tools: incomplete installation",
+             "INU files were installed, but NumPy is not working. DFF/TXD import cannot work yet.\n\n"
+             + "\n".join(report) + "\n\nCheck the error in MAXScript Listener and retry Install / Update INU.").exec()
+        return False
     text = ("INU Tools v%s is installed into 3ds Max.\n\n• %s\n\n"
             "Restart 3ds Max to activate it:\n"
             "• drag & drop .dff files into the viewport\n"

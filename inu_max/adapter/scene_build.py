@@ -54,15 +54,10 @@ fn inuSetMeshData obj inVerts inFaces = (
 )
 global inuMakeBone
 fn inuMakeBone boneName = (
-    local bn = BoneSys.createBone [0,0,0] [0.05,0,0] [0,0,1]
-    -- без «поведения кости»: иначе при оценке сцены кость тянется (stretch)
-    -- и доворачивается к ребёнку — во вьюпорте длинные «шипы» через модель
-    bn.boneEnable = false
-    bn.boneFreezeLength = true
-    bn.name = boneName
-    bn.width = 0.02
-    bn.height = 0.02
-    bn.taper = 90
+    -- Match Kam's rHAnimPLG: the bone shape is a hierarchy link,
+    -- not BoneGeometry extending along the GTA frame's local X axis.
+    local bn = dummy name:boneName boxsize:[0,0,0] wirecolor:yellow showlinks:true
+    bn.showLinksOnly = true
     bn
 )
 global inuSetChannel
@@ -265,8 +260,7 @@ def _dummy(name, size=0.1):
 
 
 def _bone(name):
-    """Bone-объект (как у Kam's). BoneGeometry напрямую не создаётся —
-    только через BoneSys; трансформ ставится потом."""
+    """Kam's-style Dummy with hierarchy links and inu_bone_id."""
     rt = _rt()
     b = rt.inuMakeBone(name)
     return b
@@ -307,16 +301,6 @@ def build(plan, tex_map=None, mark=lambda s: None):
             set_prop([obj], k, v)
         made.append(obj)
         created.append(obj)
-    # длина кости — до первого ребёнка-кости (видно в вьюпорте)
-    for i, n in enumerate(plan.nodes):
-        if n.kind != 'BONE':
-            continue
-        kids = [j for j, c in enumerate(plan.nodes) if c.parent == i and c.kind == 'BONE']
-        if kids:
-            p0, p1 = worlds[i][3], worlds[kids[0]][3]
-            d = sum((p1[k] - p0[k]) ** 2 for k in range(3)) ** 0.5
-            if d > 1e-4:
-                made[i].length = d
     # скин — когда все кости созданы
     for i, n in enumerate(plan.nodes):
         if n.mesh is None or not n.mesh.skin:

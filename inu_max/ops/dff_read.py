@@ -6,7 +6,7 @@
 #   • меш — в системе своего фрейма; UV — каналы 1/2 (V снизу: 1 − v);
 #     цвет дня — канал 0, ночи — −1, альфа вершин — −2 (0..1);
 #   • нормали — явные, на каждый угол грани (Edit_Normals);
-#   • фреймы без геометрии — Dummy, кости скелета — Bone с inu_bone_id;
+#   • фреймы без геометрии — Dummy, кости скелета — Dummy со связями (Kam’s) и inu_bone_id;
 #   • флаги геометрии — user properties inu_<флаг>; GTA-свойства материала —
 #     props (adapter/material.DEFAULTS);
 #   • 2DFX — хелперы-дети меша (поля adapter/fx); коллизия внутри DFF —
@@ -605,13 +605,44 @@ def plan(clump, base, vanilla=True, with_2dfx=True):
         from .dff_build import _inv, _mul
         tbl = frames[table_frame].hanim.bones if table_frame is not None else []
         frame_of_id = {frames[i].hanim.bone_id: i for i in bone_frames}
-        pal = [node_of.get(frame_of_id.get(b.bone_id, -1), -1) for b in tbl]
+        palette_size = max((int(b.index) for b in tbl), default=-1) + 1
+        pal = [-1] * palette_size
+        for b in tbl:
+            if b.index >= 0:
+                pal[b.index] = node_of.get(frame_of_id.get(b.bone_id, -1), -1)
+        # Skin inverse bind matrices are authoritative for the rest pose.
+        # Row vectors: IBM = mesh_world * inverse(bone_world).
+        # Therefore bone_world = inverse(IBM) * mesh_world.
+        bind_worlds = {}
+        for a in atomics:
+            skin = geoms[a.geometry_index].skin
+            if skin is None:
+                continue
+            for b in tbl:
+                fi = frame_of_id.get(b.bone_id)
+                if fi is None or not (0 <= b.index < len(skin.bone_matrices)):
+                    continue
+                world = _mul(_inv(skin.bone_matrices[b.index]), worlds[a.frame_index])
+                if fi in bind_worlds:
+                    if any(abs(world[r][c] - bind_worlds[fi][r][c]) > 1e-4
+                           for r in range(4) for c in range(4)):
+                        raise ValueError('Conflicting Skin bind poses for bone %s' % b.bone_id)
+                bind_worlds[fi] = world
+        corrected = [bind_worlds.get(i, w) for i, w in enumerate(worlds)]
+        for fi in bone_frames:
+            ni = node_of.get(fi)
+            if ni is None:
+                continue
+            parent = frames[fi].parent
+            local = (_mul(corrected[fi], _inv(corrected[parent]))
+                     if parent >= 0 else corrected[fi])
+            P.nodes[ni].transform = _rows(local)
         root_i = next((i for i, f in enumerate(frames) if f.parent < 0), 0)
         for order, a in enumerate(atomics):
             geom = geoms[a.geometry_index]
             if geom.skin is None:
                 continue
-            local = _mul(worlds[a.frame_index], _inv(worlds[root_i]))
+            local = _mul(worlds[a.frame_index], _inv(corrected[root_i]))
             n = ImportNode(name=model_name(base, n_geoms, a.geometry_index),
                            kind='MESH', parent=node_of.get(root_i, -1), transform=_rows(local))
             n.mesh = import_mesh(geom, vanilla, skinned=True)

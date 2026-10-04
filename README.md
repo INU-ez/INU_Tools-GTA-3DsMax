@@ -62,12 +62,14 @@
 | **Compiled NODES (SA)** | Editable graphs, stable vertex IDs, point creation and deletion, link rebuilding, merging with existing maps, cross-area remapping across 64 areas and validation before writing |
 | **ID Manager** | ID assignment, presets, conflict detection and protected game IDs |
 | **Vehicles and peds** | Frame hierarchy, `_ok` / `_dam` pairs, scaling, mirroring, rig and weight tools |
-| **Animation** | IFP, animation keys, IK and camera tools; SA UV animation with warnings for III/VC limitations |
+| **Animation** | IFP, animation keys, SA character IK with 13 box controls, FK transfer, Bake & Clear, ground-plane foot limits and camera tools; SA UV animation with warnings for III/VC limitations |
 | **World and effects** | Water, zones, paths, radar tools, 2DFX and `effects.fxp` writing |
 | **Scene and lighting** | Scene checks and mesh operations, Prelight / Bake over, COL properties and separate pipeline settings |
 | **Diagnostics** | File analysis, resource checks, extraction error recovery, logs and Extract/Import profiling |
 
-**Validation:** 159 automated tests passed in the latest validation run. These cover the core, file operations and adapters through test harnesses. Native Qt/pymxs workflows in Max 2023–2026 and in-game results still need validation.
+**Validation:** 185 automated tests cover the core, file operations and adapters. The SA IK workflow was also checked in an isolated Max 2026 process using vanilla `army`/`bmycr` peds and `WALK_civi`: all four limb goals, elbow/knee bend directions and pole controls, floor limits, FK transfer, scene save/reload and Bake & Clear. Other native workflows, Max 2023–2025 and in-game results still need validation.
+
+**SA IK:** select the ped skeleton and click **Add IK Rig** in IFP IO. The rig provides four hand/foot boxes, four elbow/knee boxes, two shoulders, spine, head and a root control. **Root motion** chooses Root instead of Pelvis. Existing FK animation transfers onto the controls; an unkeyed skeleton keeps its Max bind axes and the whole character is oriented upright. The boxes are larger and draw over the mesh for easier selection. Colour, size and visibility settings apply to the boxes. **Add Ground Plane** connects foot limits, including when the plane is added after the rig. **Bake & Clear IK** writes the evaluated animation back to the GTA bones and removes rig helpers. For an older four-chain rig, use **Bake & Clear IK** before adding the new rig. If the previous IK version distorted the initial pose, reimport the original DFF and add the rig again; baking would preserve that distorted pose.
 
 The port excludes Blender-specific Texture Bake, geometry nodes and live previews. Some COL, LOD and adapter improvements remain; see the [transfer log](docs/MAX_TODO_2026-09-28.md) for details and limitations.
 

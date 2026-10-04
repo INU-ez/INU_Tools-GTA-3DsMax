@@ -1,4 +1,8 @@
 *.pyc
+dev/tests/e2e/ik_*.log
+dev/tests/e2e/ik_runtime_result.json
+dev/tests/e2e/ik_roundtrip.max
+dev/tests/e2e/ik_roundtrip.max.bak
 max_plugin/INU_Import.vcxproj
 max_plugin/INU_Import.cpp
 max_plugin/INU_FastMesh.cpp

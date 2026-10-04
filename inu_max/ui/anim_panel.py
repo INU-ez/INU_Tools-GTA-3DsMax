@@ -407,6 +407,18 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         v.addWidget(st)
         self._refresh_flip()
 
+    def _set(self, key, value):
+        super()._set(key, value)
+        if key in {'ik_color', 'ik_size', 'ik_show_chain', 'ik_show_pole', 'ik_show_rot', 'ik_show_root', 'floor_offset'}:
+            try:
+                from ..ops import ik_rig
+                if key == 'floor_offset':
+                    ik_rig.patch_floor()
+                else:
+                    ik_rig.update_display()
+            except Exception as error:
+                print('[INU IK] Display/floor update failed:', error)
+
     def _color_button(self):
         """Образец цвета IK-контролов (клик — выбрать цвет)."""
         b = QtWidgets.QPushButton()
@@ -664,8 +676,8 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         self._lb_cur.setText("Current: %s" % cur)
 
         self._ik.setVisible(skel is not None)
-        rigged = skel is not None and bool(_safe(lambda: _sel().get_prop(
-            skel, 'ik_rigged', False), False))
+        from ..ops import ik_rig
+        rigged = skel is not None and bool(_safe(lambda: ik_rig.is_rigged(skel), False))
         self._fb_bake.setVisible(rigged)
         self._ik_root.setVisible(not rigged)
         self._fb_add_ik.setVisible(not rigged)

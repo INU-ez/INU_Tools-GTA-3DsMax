@@ -132,6 +132,14 @@ class AdapterRegressionTests(unittest.TestCase):
         with patch('inu_max.ops.anim_tools.S._rt', return_value=rt):
             self.assertEqual(list(keyed_controllers(root)), [(leaf, 3)])
 
+    def test_compound_controller_with_positive_key_count_uses_leaf_tracks(self):
+        leaf = SimpleNamespace(count=3, children=[])
+        root = SimpleNamespace(count=3, children=[leaf], numSubs=1)
+        rt = SimpleNamespace(numKeys=lambda c:c.count,
+            getSubAnim=lambda c,i:SimpleNamespace(controller=c.children[i-1]))
+        with patch('inu_max.ops.anim_tools.S._rt',return_value=rt):
+            self.assertEqual(list(keyed_controllers(root)),[(leaf,3)])
+
 
 class BatchWriteTests(unittest.TestCase):
     def test_failed_second_replace_restores_first_and_leaves_no_temps(self):

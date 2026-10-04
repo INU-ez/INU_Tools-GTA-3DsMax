@@ -151,7 +151,7 @@ class MissingPipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as destination:
             with patch.object(SU, 'max_python', return_value='Max Python.exe'), \
                  patch.object(SU, 'libs_dir', return_value=destination), \
-                 patch.object(SU.subprocess, 'Popen', side_effect=[failed, success]) as popen, \
+                 patch.object(SU.subprocess, 'Popen', side_effect=[failed, success, success]) as popen, \
                  patch.object(SU.urllib.request, 'urlopen', side_effect=[
                      io.BytesIO(json.dumps(metadata).encode()), io.BytesIO(data)]):
                 ok, _ = SU.install_numpy(log=lambda line: None)
@@ -184,3 +184,33 @@ class MenuBootstrapTests(unittest.TestCase):
         launcher = Path('inu_launcher.ms').read_text(encoding='utf-8')
         self.assertIn('global INU_launch', launcher)
         self.assertIn('global INU_boot', launcher)
+
+
+class NumpyHealthTests(unittest.TestCase):
+    def test_empty_namespace_is_not_a_working_numpy(self):
+        import sys
+        with patch.dict(sys.modules, {'numpy': NS()}):
+            self.assertFalse(SU.numpy_ok())
+
+    def test_broken_binary_import_is_not_a_working_numpy(self):
+        import sys
+        broken = NS(uint8=object(), frombuffer=Mock(side_effect=RuntimeError('broken ABI')))
+        with patch.dict(sys.modules, {'numpy': broken}):
+            self.assertFalse(SU.numpy_ok())
+
+    def test_valid_numpy_buffer_is_accepted(self):
+        import sys
+        good = NS(uint8=object(), frombuffer=Mock(return_value=NS(tolist=lambda: [1, 2])))
+        with patch.dict(sys.modules, {'numpy': good}):
+            self.assertTrue(SU.numpy_ok())
+
+    def test_installation_success_requires_working_numpy(self):
+        installed = Mock(stdout=True, returncode=0)
+        installed.communicate.return_value = (b'installed',)
+        broken = Mock(stdout=True, returncode=1)
+        broken.communicate.return_value = (b'AttributeError: frombuffer',)
+        with patch.object(SU, 'max_python', return_value='Max Python.exe'), \
+             patch.object(SU.subprocess, 'Popen', side_effect=[installed, broken]):
+            ok, message = SU.install_numpy(log=lambda line: None)
+            self.assertFalse(ok)
+            self.assertIn('verification failed', message)

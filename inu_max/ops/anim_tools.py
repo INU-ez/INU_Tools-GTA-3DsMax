@@ -33,14 +33,18 @@ def keyed_controllers(controller):
     rt = S._rt()
     if controller is None:
         return
-    count = int(rt.numKeys(controller))
-    if count >= 0:
-        yield controller, count
-        return
-    for index in range(1, int(controller.numSubs) + 1):
+    children = []
+    for index in range(1, int(getattr(controller,'numSubs',0)) + 1):
         child = rt.getSubAnim(controller, index).controller
         if child is not None:
+            children.append(child)
+    if children:
+        for child in children:
             yield from keyed_controllers(child)
+    else:
+        count = int(rt.numKeys(controller))
+        if count >= 0:
+            yield controller, count
 
 
 def _clip(name):
@@ -56,6 +60,7 @@ def apply_clip(clip, root, start=0, replace=True):
     import pymxs
     rt = S._rt()
     bones = _bones(root)
+    rt.execute('global inuAnimQuatTM; fn inuAnimQuatTM q = (q as matrix3)')
     by_id = {S.get_field(n, 'bone_id', -1): n for n in bones if S.get_field(n, 'bone_id', -1) >= 0}
     by_name = {str(n.name).strip().casefold(): n for n in bones}
     matched, missing = [], []
@@ -85,7 +90,7 @@ def apply_clip(clip, root, start=0, replace=True):
                 rt.deleteKeys(node.controller, rt.Name('allKeys'))
             for key in bone.keyframes:
                 with pymxs.animate(True), pymxs.attime(start + key.time * fps):
-                    local = rt.Matrix3(rt.Quat(*key.rotation))
+                    local = rt.inuAnimQuatTM(rt.Quat(*key.rotation))
                     local.row4 = (rt.Point3(*key.translation) if bone.key_type & HAS_TRANS else rest.row4)
                     node.transform = local * node.parent.transform if node.parent is not None else local
         S.put_field([root], 'ifp_current', clip.name)
@@ -193,46 +198,47 @@ def ifp_preview_toggle(on=True):
 
 
 def add_ground_plane():
+    from . import ik_rig
     rt = S._rt()
+    plane = next((n for n in rt.objects if S.get_field(n, 'ik_ground', False)), None)
     with S.undo_block('INU: Ground Plane'):
-        plane = rt.Plane(name=rt.uniqueName('INU_Ground'), length=100, width=100, lengthsegs=1, widthsegs=1)
-        S.put_field([plane], 'preview', True)
-        S.put_field([plane], 'type', 'NON')
-        plane.isFrozen = True
+        if plane is None:
+            plane = rt.Plane(name=rt.uniqueName('INU_Ground'), length=10, width=10, lengthsegs=10, widthsegs=10)
+            S.put_field([plane], 'preview', True)
+            S.put_field([plane], 'type', 'NON')
+            S.put_field([plane], 'ik_ground', True)
+            plane.wirecolor = rt.Color(100, 100, 100)
+        ik_rig.patch_floor()
     rt.redrawViews()
-    return 'INFO', 'Created ground plane'
+    return 'INFO', 'Ground plane is connected to IK foot controls'
+
+
+def _ik_pairs(bones):
+    names = {' '.join(str(n.name).lower().split()): n for n in bones}
+    ids = {int(S.get_field(n, 'bone_id', -1)): n for n in bones
+           if S.get_field(n, 'bone_id', -1) >= 0}
+    pairs = []
+    for label, start_id, end_id, start_name, end_name in (
+            ('L_Arm', 32, 34, 'l upperarm', 'l hand'),
+            ('R_Arm', 22, 24, 'r upperarm', 'r hand'),
+            ('L_Leg', 41, 43, 'l thigh', 'l foot'),
+            ('R_Leg', 51, 53, 'r thigh', 'r foot')):
+        start = ids.get(start_id, names.get(start_name))
+        end = ids.get(end_id, names.get(end_name))
+        if start is None or end is None:
+            continue
+        ancestor = end.parent
+        while ancestor is not None and ancestor != start:
+            ancestor = ancestor.parent
+        if ancestor == start:
+            pairs.append((label, start, end))
+    return pairs
 
 
 def add_ik_rig():
-    rt = S._rt()
+    from . import ik_rig
     root = _rig()
-    nodes = {str(node.name).lower(): node for node in _bones(root)}
-    pairs = [('l upperarm', 'l hand'), ('r upperarm', 'r hand'),
-             ('l thigh', 'l foot'), ('r thigh', 'r foot')]
-    created = []
-    with S.undo_block('INU: IK Rig'):
-        if not any(S.get_field(n,'ik_root',0)==int(rt.getHandleByAnim(root)) for n in rt.helpers):
-            for bone in _bones(root):
-                backup=rt.Point(name=rt.uniqueName('INU_FK_Backup'),size=.1)
-                backup.controller=rt.copy(bone.controller)
-                backup.isHidden=True
-                S.put_field([backup],'ik_restore_node',int(rt.getHandleByAnim(bone)))
-                S.put_field([backup],'ik_backup_root',int(rt.getHandleByAnim(root)))
-                S.put_field([backup],'preview',True)
-                S.put_field([backup],'type','NON')
-        for start, end in pairs:
-            if start not in nodes or end not in nodes:
-                continue
-            marker = 'INU_IK_' + start.replace(' ', '_')
-            if S.find(marker) is not None:
-                continue
-            chain = rt.IKSys.ikChain(nodes[start], nodes[end], 'IKHISolver')
-            chain.name = marker
-            S.put_field([chain], 'ik_root', int(rt.getHandleByAnim(root)))
-            S.put_field([chain], 'type', 'NON')
-            created.append(chain)
-    rt.redrawViews()
-    return ('INFO' if created else 'WARNING'), 'Created %d native HI IK chains' % len(created)
+    return ik_rig.add(root, _bones(root))
 
 
 OPERATIONS = {name: globals()[name] for name in ('apply_ifp', 'export_ifp',
@@ -240,36 +246,9 @@ OPERATIONS = {name: globals()[name] for name in ('apply_ifp', 'export_ifp',
 
 
 def bake_ik_rig():
-    import pymxs
-    rt=S._rt()
-    root=_rig()
-    handle=int(rt.getHandleByAnim(root))
-    chains=[n for n in rt.helpers if S.get_field(n,'ik_root',0)==handle]
-    backups=[n for n in rt.helpers if S.get_field(n,'ik_backup_root',0)==handle]
-    if not chains:
-        return 'WARNING','No INU IK chains on this skeleton'
-    bones=_bones(root)
-    start,end=int(rt.animationRange.start.frame),int(rt.animationRange.end.frame)
-    if end-start>10000:
-        raise ValueError('Bake at most 10000 frames per run')
-    samples=[]
-    for frame in range(start,end+1):
-        with pymxs.attime(frame):
-            samples.append((frame,[(n,rt.copy(n.transform)) for n in bones]))
-    with S.undo_block('INU: Bake and Clear IK'):
-        for chain in chains:
-            rt.delete(chain)
-        for backup in backups:
-            bone=rt.maxOps.getNodeByHandle(S.get_field(backup,'ik_restore_node',0))
-            if bone is not None:
-                bone.controller=rt.copy(backup.controller)
-            rt.delete(backup)
-        for frame,poses in samples:
-            with pymxs.animate(True),pymxs.attime(frame):
-                for node,transform in poses:
-                    node.transform=transform
-    rt.redrawViews()
-    return 'INFO','Baked %d frames and removed %d IK chains' % (len(samples),len(chains))
+    from . import ik_rig
+    root = _rig()
+    return ik_rig.bake(root, _bones(root))
 
 
 def fix_quat_signs():

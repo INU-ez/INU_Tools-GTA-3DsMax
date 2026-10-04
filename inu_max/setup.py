@@ -123,9 +123,10 @@ def plugin_source(root, year):
 
 def numpy_ok():
     try:
-        import numpy  # noqa: F401
-        return True
-    except ImportError:
+        import numpy
+        values = numpy.frombuffer(b'\x01\x02', dtype=numpy.uint8)
+        return values.tolist() == [1, 2]
+    except Exception:
         return False
 
 
@@ -319,7 +320,8 @@ def install_numpy(log=print, wait=None):
         return False, "Max python.exe not found"
     spec = 'numpy>=2.1,<3' if sys.version_info >= (3, 13) else 'numpy==1.26.4'
     cmd = [py, '-m', 'pip', 'install', '--disable-pip-version-check',
-           '--no-warn-script-location', '--upgrade', '--target', libs_dir(), spec]
+           '--no-warn-script-location', '--upgrade', '--force-reinstall',
+           '--only-binary=:all:', '--target', libs_dir(), spec]
     def run(command):
         log("[INU setup] %s" % " ".join(command))
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -353,6 +355,13 @@ def install_numpy(log=print, wait=None):
                 code, out = run([py, '-c', script, wheel_path] + cmd[3:])
         if code:
             return False, out.strip().splitlines()[-1] if out.strip() else "pip failed"
+        # Validate in a fresh Max Python process: the running host may still
+        # have an incomplete or old numpy cached, and native modules cannot
+        # safely be unloaded and reimported before Max restarts.
+        check = "import sys;sys.path.insert(0,sys.argv[1]);import numpy as np;assert np.frombuffer(bytes([1,2]),dtype=np.uint8).tolist()==[1,2];print(np.__file__)"
+        code, out = run([py, '-c', check, libs_dir()])
+        if code:
+            return False, 'NumPy verification failed: ' + (out.strip().splitlines()[-1] if out.strip() else 'unknown error')
     except (OSError, ValueError, KeyError, StopIteration) as e:
         return False, str(e)
     if libs_dir() not in sys.path:
