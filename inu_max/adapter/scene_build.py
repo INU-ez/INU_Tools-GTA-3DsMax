@@ -167,29 +167,31 @@ def _world_rows(nodes):
 # ── материалы ────────────────────────────────────────────────────────
 
 def _material(md, tex_map, idx):
-    """Standard-материал: цвет/прозрачность, diffuse-bitmap по имени текстуры,
+    """Выбранный Standard / INU GTA: цвет/альфа, bitmap по имени текстуры,
     GTA-свойства в AppData (adapter/material)."""
     from . import material as mat_ad
     rt = _rt()
-    std = rt.StandardMaterial(name=md.name or "mat_%d" % idx)
-    std.twoSided = True
+    std = mat_ad.create_import_material(md.name or "mat_%d" % idx)
+    if not mat_ad.is_gta(std):
+        std.twoSided = True
     r, g, b, a = md.color
-    std.diffuse = rt.color(float(r), float(g), float(b))
-    std.opacity = float(a) / 255.0 * 100.0
+    mat_ad.set_color(std, (float(r) / 255.0, float(g) / 255.0,
+                           float(b) / 255.0, float(a) / 255.0))
     props = dict(md.props)
     if md.texture:
         props['texture_name'] = md.texture      # имя из DFF (PNG может быть переименован)
         png = tex_map.get(md.texture.lower())
         if png:
             try:
-                std.diffuseMap = rt.Bitmaptexture(fileName=png)
-                std.showInViewport = True
+                mat_ad.set_diffuse(std, rt.Bitmaptexture(fileName=png))
+                rt.showTextureMap(std, True)
                 if mat_ad._has_alpha(png):
                     mat_ad.set_props(std, props)
                     mat_ad.set_blend(std, 'BLEND')
             except Exception as e:                     # noqa: BLE001
                 print("[INU import] bitmap '%s': %r" % (md.texture, e))
     mat_ad.set_props(std, props)
+    mat_ad.resolve_effect_maps(std, tex_map)
     return std
 
 
@@ -358,9 +360,8 @@ def build_collision(meshes, prims, mat_cache=None):
         key = (tuple(sorted(s.items())), shadow)
         m = cache.get(key)
         if m is None:
-            m = rt.StandardMaterial(name="COL_%d" % s['col_mat_index'])
-            m.diffuse = rt.color(60, 60, 60) if shadow else rt.color(120, 200, 120)
-            mat_ad.set_props(m, s)
+            m = mat_ad.create_collision_material(
+                ("SHA_%d" if shadow else "COL_%d") % s['col_mat_index'], s, shadow)
             cache[key] = m
         return m
 
@@ -401,6 +402,7 @@ def build_collision(meshes, prims, mat_cache=None):
         set_prop([obj], 'col_flags', s['col_flags'])
         set_prop([obj], 'col_brightness', s['col_brightness'])
         set_prop([obj], 'col_light', s['col_day_light'] | (s['col_night_light'] << 4))
+        obj.material = mat_for(s, False)
         if p.bounds:
             _bounds_prop(obj, p.bounds)
         obj.xray = True

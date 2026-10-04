@@ -25,6 +25,9 @@ def import_dff(filepath, auto_txd=True, extra_tex=None):
     from . import dff_read
     from ..adapter import scene_build
 
+    from ..adapter.material import check_import_material
+    check_import_material()
+
     vanilla = bool(settings.get('import_weld_sharpen', False))
     plan, clump = dff_read.plan_file(filepath, vanilla=vanilla,
                                      with_2dfx=bool(settings.get('import_2dfx', True)))
@@ -39,6 +42,14 @@ def import_dff(filepath, auto_txd=True, extra_tex=None):
             from ..adapter.texture import build_tex_map
             needed = {m.texture.name.lower() for g in (clump.geometries or [])
                       for m in (g.materials or []) if m.texture is not None and m.texture.name}
+            # Effect maps are materials' textures too (environment, bump, dual, specular).
+            for node in plan.nodes:
+                for material in getattr(node, 'materials', ()):
+                    for key in ('env_map_tex', 'bump_map_tex', 'specular_texture', 'dual_tex_texture',
+                                'dk_normal_texture', 'dk_reflection_texture'):
+                        name = material.props.get(key)
+                        if name:
+                            needed.add(str(name).lower())
             tex_map = build_tex_map(filepath, needed)
         except Exception as e:                         # noqa: BLE001
             print("[INU import_dff] автопоиск текстур пропущен: %r" % (e,))

@@ -173,6 +173,7 @@ class AnimTools(BuildMixin, QtWidgets.QWidget):
         self._act = QtWidgets.QWidget()
         vl = _vbox(self._act)
         self._cmb = QtWidgets.QComboBox()
+        self._cmb.setProperty('inu_i18n_data', True)
         self._cmb.setEditable(True)
         self._cmb.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
         self._cmb.setSizeAdjustPolicy(

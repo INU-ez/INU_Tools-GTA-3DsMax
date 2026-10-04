@@ -126,6 +126,7 @@ class MaterialTools(BuildMixin, QtWidgets.QWidget):
 
         # материал выделенного объекта / подматериал Multi/Sub («слот»)
         self._slot_cb = QtWidgets.QComboBox()
+        self._slot_cb.setProperty('inu_i18n_data', True)
         self._slot_cb.setFixedHeight(BTN_H)
         self._slot_cb.setSizeAdjustPolicy(
             QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)

@@ -67,7 +67,13 @@
 | **Scene and lighting** | Scene checks and mesh operations, Prelight / Bake over, COL properties and separate pipeline settings |
 | **Diagnostics** | File analysis, resource checks, extraction error recovery, logs and Extract/Import profiling |
 
-**Validation:** 194 automated tests cover the core, file operations and adapters. The SA IK workflow was also checked in an isolated Max 2026 process using vanilla `army`/`bmycr` peds and `WALK_civi`: all four limb goals, elbow/knee bend directions and pole controls, floor limits, FK transfer, scene save/reload and Bake & Clear. Other native workflows, Max 2023–2025 and in-game results still need validation.
+**Validation:** 229 automated tests cover the core, file operations, adapters and localization. Materials, DK normal maps, scene save/reload and English/Russian UI switching were checked in an isolated Max 2026 process. The SA IK workflow was also checked using vanilla `army`/`bmycr` peds and `WALK_civi`: all four limb goals, elbow/knee bend directions and pole controls, floor limits, FK transfer, scene save/reload and Bake & Clear. Max 2023–2025 and in-game results still need validation.
+
+**GTA material set:** INU bundles the original Kam/GoldFish `GTA_Material.ms` and `GTA_COLplugin.ms`, including the original classes and class IDs. Existing installed Kam classes are reused. Legacy INU classes remain loadable for earlier scenes. COL Surface/Shadow fields and SA Reflection/specular/bump values are mapped to INU export. DK Normal Map (effect 6) supports import/export of the normal texture, reflection texture and reflection amount through plugin chunk `0x133`, including older type-1 materials. DK rendering in the game depends on its third-party plugin.
+
+**Interface language:** **Setup → Language** selects **English** (default) or **Русский**. The choice is remembered. INU windows, native launcher, GTA material controls, file dialogs, tooltips and operation messages use the selected language; open INU windows update immediately. Translations reuse the Blender INU dictionary with additions for Max. Material class IDs, names, texture names and file paths stay unchanged.
+
+**Import materials:** choose Standard or GTA Material below Import / Export in DFF IO. GTA Material uses the bundled original `GTA_Mtl`; installing Kam’s separately is unnecessary. The choice is remembered and applies to new DFF materials.
 
 **Auto TXD:** on DFF import, looks for PNG, DDS, TGA, BMP, JPG/JPEG and TIFF images by texture name in the DFF folder and its subfolders. Nearby folders win; loose images take priority over automatically extracted TXD textures. Matching TXDs fill missing textures. A TXD explicitly selected in the same import has the highest priority.
 

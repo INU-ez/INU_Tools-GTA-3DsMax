@@ -17,6 +17,7 @@ import os
 import tempfile
 
 from ..qt import QtWidgets, QtCore, QtGui
+from ..i18n import tr
 
 from .style import qss, BTN_H, SB_W, SB_GAP
 from .widgets import scrolled, content_min_width
@@ -161,11 +162,11 @@ class _DirModel(QtCore.QAbstractTableModel):
     # — отображение —
     def _type(self, r):
         if not self._root:
-            return "Drive"
+            return tr("Drive")
         if r[1]:
-            return "Folder"
+            return tr("Folder")
         ext = os.path.splitext(r[0])[1][1:]
-        return (ext.upper() + " File") if ext else "File"
+        return tr("%s File" % ext.upper()) if ext else tr("File")
 
     def _icon(self, r):
         key = r[4] if not self._root else ('/dir' if r[1] else
@@ -184,7 +185,7 @@ class _DirModel(QtCore.QAbstractTableModel):
 
     def headerData(self, s, orient, role=QtCore.Qt.DisplayRole):  # noqa: N802
         if orient == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
-            return self._HEAD[s]
+            return tr(self._HEAD[s])
         return None
 
     def data(self, idx, role=QtCore.Qt.DisplayRole):
@@ -345,6 +346,7 @@ class _Sidebar(QtWidgets.QWidget):
     # — наполнение —
     def _section(self, title):
         it = QtWidgets.QTreeWidgetItem([title])
+        it.setData(0, QtCore.Qt.UserRole+1, title)
         f = it.font(0)
         f.setBold(True)
         it.setFont(0, f)
@@ -352,8 +354,9 @@ class _Sidebar(QtWidgets.QWidget):
         self.tree.addTopLevelItem(it)
         return it
 
-    def _place(self, sec, label, path, icon=None):
+    def _place(self, sec, label, path, icon=None, localized=False):
         it = QtWidgets.QTreeWidgetItem([label])
+        if localized:it.setData(0, QtCore.Qt.UserRole+1, label)
         it.setData(0, QtCore.Qt.UserRole, path)
         it.setToolTip(0, QtCore.QDir.toNativeSeparators(path) if path else "This PC")
         it.setIcon(0, icon or self._prov.icon(QtCore.QFileInfo(path)))
@@ -374,7 +377,7 @@ class _Sidebar(QtWidgets.QWidget):
                            ("Downloads", std.DownloadLocation)):
             p = std.writableLocation(loc)
             if p and os.path.isdir(p):
-                self._place(sysx, label, _clean(p))
+                self._place(sysx, label, _clean(p), localized=True)
         bm = self._section("Bookmarks")
         for p in self._state.get('bookmarks', []):
             self._place(bm, os.path.basename(p.rstrip('/')) or p, p)
@@ -383,7 +386,7 @@ class _Sidebar(QtWidgets.QWidget):
             self._place(rec, os.path.basename(p.rstrip('/')) or p, p)
         for i in range(self.tree.topLevelItemCount()):
             it = self.tree.topLevelItem(i)
-            it.setExpanded(opened.get(it.text(0), True))
+            it.setExpanded(opened.get(it.data(0, QtCore.Qt.UserRole+1) or it.text(0), True))
         self.mark(self.cwd)
 
     def mark(self, cwd):
@@ -408,7 +411,7 @@ class _Sidebar(QtWidgets.QWidget):
 
     def _remember_open(self, it, value):
         if it.parent() is None:
-            self._state.setdefault('side_open', {})[it.text(0)] = value
+            self._state.setdefault('side_open', {})[it.data(0, QtCore.Qt.UserRole+1) or it.text(0)] = value
             _save_state(self._state)
 
     def add_bookmark(self, path):
@@ -424,7 +427,7 @@ class _Sidebar(QtWidgets.QWidget):
         if path is None:
             it = self.tree.currentItem()
             if it is not None and it.parent() is not None \
-                    and it.parent().text(0) == "Bookmarks":
+                    and it.parent().data(0, QtCore.Qt.UserRole+1) == "Bookmarks":
                 path = it.data(0, QtCore.Qt.UserRole)
         marks = self._state.get('bookmarks', [])
         if path and path in marks:
@@ -505,6 +508,7 @@ class INUFileDialog(QtWidgets.QDialog):
         mid.addWidget(self._side)
         mid.addWidget(self._build_views(), 1)
         self._opts_w = 0
+        self._i18n_options = None
         if options is not None:
             lay, _view, _strip = scrolled(options)
             box = QtWidgets.QWidget()
@@ -514,6 +518,7 @@ class INUFileDialog(QtWidgets.QDialog):
             # считаются по 80px и панель выходит вдвое шире
             self._opts_w = content_min_width(options) + SB_W + SB_GAP
             box.setFixedWidth(self._opts_w)
+            self._i18n_options = options, box
         outer.addLayout(self._build_bottom(accept_label, filename))
 
         self.resize(760 + self._opts_w, 540)
@@ -524,6 +529,20 @@ class INUFileDialog(QtWidgets.QDialog):
             start = QtCore.QStandardPaths.writableLocation(
                 QtCore.QStandardPaths.DocumentsLocation)
         self._go(_clean(start), push=False)
+        from .. import i18n
+        i18n.install()
+        i18n._SERVICE.refresh()
+        self._refit_translation()
+
+    def _refit_translation(self):
+        if not getattr(self, '_i18n_options', None):
+            return
+        options, box = self._i18n_options
+        need = content_min_width(options) + SB_W + SB_GAP
+        delta = need - self._opts_w
+        self._opts_w = need
+        box.setFixedWidth(need)
+        self.resize(max(650 + need, self.width() + delta), self.height())
 
     # — построение —
     def _tool(self, icon, tip, slot):
@@ -632,6 +651,7 @@ class INUFileDialog(QtWidgets.QDialog):
             g.addWidget(lab, r, 0)
             labs.append(lab)
         self._name = QtWidgets.QComboBox()
+        self._name.setProperty('inu_i18n_data', True)
         self._name.setEditable(True)
         self._name.setFixedHeight(BTN_H)
         self._name.setInsertPolicy(QtWidgets.QComboBox.NoInsert)

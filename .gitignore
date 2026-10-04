@@ -3,6 +3,15 @@ dev/tests/e2e/ik_*.log
 dev/tests/e2e/ik_runtime_result.json
 dev/tests/e2e/ik_roundtrip.max
 dev/tests/e2e/ik_roundtrip.max.bak
+dev/tests/e2e/material_*.log
+dev/tests/e2e/material_runtime_result.json
+dev/tests/e2e/material_roundtrip.max*
+dev/tests/e2e/material_probe.ms
+dev/tests/e2e/localization_*.log
+dev/tests/e2e/localization_*.png
+dev/tests/e2e/localization_runtime_result.json
+dev/tests/e2e/localization_probe.ms
+dev/tests/e2e/material_localization_probe.ms
 max_plugin/INU_Import.vcxproj
 max_plugin/INU_Import.cpp
 max_plugin/INU_FastMesh.cpp

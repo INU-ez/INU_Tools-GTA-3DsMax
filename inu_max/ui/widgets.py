@@ -787,6 +787,7 @@ class PropsDialog(QtWidgets.QDialog):
         except Exception:                              # noqa: BLE001
             pass
         self.setFixedWidth(width)
+        self._i18n_base_width = width
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
@@ -804,6 +805,9 @@ class PropsDialog(QtWidgets.QDialog):
         self.buttons = FusedBlock([[self.ok, cancel]])
         row.addWidget(self.buttons)
         outer.addLayout(row)
+
+    def _refit_translation(self):
+        self.setFixedWidth(max(self._i18n_base_width, self.layout().totalMinimumSize().width()))
 
 
 class BuildMixin:

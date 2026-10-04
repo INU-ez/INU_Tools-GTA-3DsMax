@@ -170,6 +170,17 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
 
         # Страховка от обрезки справа: если роллаутам (включая скрытые группы
         # и свёрнутые роллауты) нужно шире, чем даёт окно, — расширяем окно.
+        self._i18n_host, self._i18n_base_width = host, width
+        from .. import i18n
+        i18n.install()
+        i18n._SERVICE.refresh()
+        self._refit_translation()
+
+    def _refit_translation(self):
+        if not hasattr(self, '_i18n_host'):
+            return
+        host, width = self._i18n_host, self._i18n_base_width
+        outer = self.layout()
         need = (content_min_width(host) + outer.contentsMargins().left()
                 + outer.contentsMargins().right() + SB_W + SB_GAP)
         self.setFixedWidth(max(width, need))
@@ -244,6 +255,11 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         # установка INU в Max: пакет INU_Tools.bundle (перетаскивание .dff во
         # вьюпорт, меню INU Tools, лаунчер при запуске, numpy) — inu_max/setup.py
         s = Rollout("Setup", opened=True)
+        from .. import i18n
+        s.body.addLayout(self._row(QtWidgets.QLabel("Language"), self._combo(
+            'ui_language', [("English", 'EN', "English interface"),
+                            ("Русский", 'RU', "Русский интерфейс")],
+            'EN', "Interface language", lambda: i18n.set_language(self._get('ui_language', 'EN')))))
         self._setup_lb = self._hint("")
         s.body.addWidget(self._setup_lb)
         self._setup_btn = mk("Install INU", "setup:install")
@@ -298,6 +314,12 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         exp.setToolTip("Export selected models (DFF + COL + LOD + TXD). "
                        "Options are in the file window.")
         s.body.addWidget(FusedBlock([[imp, exp]], height=BTN_H + 3))
+
+        s.body.addLayout(self._row(QtWidgets.QLabel("Import materials:"), self._combo(
+            'import_material_type',
+            [("Standard", 'STANDARD', "Native Standard material with INU GTA properties."),
+             ("GTA Material", 'GTA', "INU GTA Material: built-in GTA settings, no Kam's dependency.")],
+            'STANDARD', "Material type created on DFF import, including Auto TXD textures.")))
 
         auto = self._check(
             "Auto TXD", 'auto_txd', True,

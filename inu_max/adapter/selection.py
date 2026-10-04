@@ -365,8 +365,9 @@ def undo_block(label):
     отмена удалила и узел, созданный до блока). Здесь изменения до ошибки
     остаются (их снимает Ctrl+Z), а ошибка идёт дальше — в отчёт окна."""
     import pymxs
+    from ..i18n import tr
     err = []
-    with pymxs.undo(True, label):
+    with pymxs.undo(True, tr(label)):
         try:
             yield
         except Exception as e:                         # noqa: BLE001

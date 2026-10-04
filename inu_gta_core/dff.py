@@ -40,6 +40,7 @@ CHUNK_SKIN_PLG         = 278
 CHUNK_HANIM_PLG        = 286
 CHUNK_USERDATA_PLG     = 287
 CHUNK_MATFX_PLG        = 288
+CHUNK_DK_NORMAL_MAP    = 0x133
 CHUNK_UV_ANIM_PLG      = 309
 CHUNK_BIN_MESH_PLG     = 1294
 CHUNK_NATIVE_DATA_PLG  = 0x0510   # 1296 — mobile (War Drum OpenGL) + PS2/Xbox native geom
@@ -476,6 +477,25 @@ def _read_uv_anim_plg(data: bytes, offset: int, size: int) -> list:
 
 
 @dataclass
+class DKNormalMapEffect:
+    """DK plugin material 0x133: type 49 (or older normal-only type 1)."""
+    normal_texture: Optional[DffTexture] = None
+    reflection_amount: float = 1.0
+    reflection_texture: Optional[DffTexture] = None
+    effect_type: int = 49
+
+    def to_bytes(self, lib_id):
+        if self.effect_type not in (1, 49):
+            raise ValueError('Unsupported DK material type')
+        data = pack('<I', self.effect_type)
+        data += (self.normal_texture or DffTexture()).to_bytes(lib_id)
+        if self.effect_type == 49:
+            data += pack('<f', self.reflection_amount)
+            data += (self.reflection_texture or DffTexture()).to_bytes(lib_id)
+        return _chunk(CHUNK_DK_NORMAL_MAP, data, lib_id)
+
+
+@dataclass
 class DffMaterial:
     """Single material with optional plugins."""
     color: RGBA = field(default_factory=RGBA)
@@ -488,6 +508,7 @@ class DffMaterial:
     reflection: Optional[ReflectionMaterial] = None
     user_data: Optional[UserData] = None
     uv_anim_names: list = field(default_factory=list)  # names in clump UV anim dict
+    dk_normal_map: Optional[DKNormalMapEffect] = None
 
     def _matfx_bytes(self, lib_id: int) -> bytes:
         """Build Material Effects PLG content."""
@@ -564,6 +585,8 @@ class DffMaterial:
         # Extensions
         ext_data = b''
         ext_data += self._matfx_bytes(lib_id)
+        if self.dk_normal_map:
+            ext_data += self.dk_normal_map.to_bytes(lib_id)
 
         if self.specular:
             spec_data = pack('<f', self.specular.level)
@@ -571,11 +594,10 @@ class DffMaterial:
             spec_data += spec_name + b'\x00' * (24 - len(spec_name))
             ext_data += _chunk(CHUNK_SPECULAR_MAT, spec_data, lib_id)
 
-        # W7: Reflection Material (CHUNK 0x0253F2FC) — остаток 3ds Max-экспортёра.
-        # Ваниль SA его НЕ пишет, движку он не нужен: env-map машин идёт через
-        # MatFX (_matfx_bytes выше). Поэтому не сериализуем — так DFF совпадает
-        # с ванильным. Данные (self.reflection) сохраняются в объекте на случай
-        # анализа, но в файл не попадают.
+        if self.reflection:
+            ref = self.reflection
+            ext_data += _chunk(CHUNK_REFLECTION_MAT, pack('<5fI',
+                ref.scale_x, ref.scale_y, ref.offset_x, ref.offset_y, ref.intensity, 0), lib_id)
 
         if self.user_data and self.user_data.sections:
             ext_data += self.user_data.to_bytes(lib_id)
@@ -1764,7 +1786,8 @@ class DffClump:
                 # airport_03_sfse / cables) also lands here, so such
                 # buildings get R2R + MatFX=1 that vanilla lacks. The engine
                 # treats it as a NULL effect and renders identically.
-                _matfx = any(
+                _dk_fx = any(m.dk_normal_map for m in geom.materials)
+                _matfx = _dk_fx or any(
                     m.bump_map or m.env_map or m.dual_texture
                     or m.specular or m.reflection
                     or getattr(m, 'uv_anim_names', None)
@@ -1782,7 +1805,9 @@ class DffClump:
                     for m in geom.materials)
                 _uvanim = any(getattr(m, 'uv_anim_names', None)
                               for m in geom.materials)
-                if (_veh_fx and not _uvanim and not geom.skin
+                if _dk_fx and not geom.skin and rw_version >= 0x36000:
+                    atomic_ext += _chunk(0x001F, pack('<II', CHUNK_DK_NORMAL_MAP, 1), lib_id)
+                elif (_veh_fx and not _uvanim and not geom.skin
                         and rw_version >= 0x36000):
                     atomic_ext += _chunk(0x001F, pack('<II', 0x0120, 0), lib_id)
                 if _matfx:
@@ -1951,6 +1976,8 @@ def _read_material_chunk(r: BinaryReader, size: int, rw_version: int) -> DffMate
                 plugin_end = r.pos + ecs
                 if ect == CHUNK_MATFX_PLG:
                     _read_matfx_plugin(r, ecs, mat)
+                elif ect == CHUNK_DK_NORMAL_MAP:
+                    mat.dk_normal_map = _read_dk_plugin(r, ecs)
                 elif ect == CHUNK_SPECULAR_MAT:
                     level = r.read_one('<f')
                     name_raw = r.read_bytes(min(24, ecs - 4))
@@ -1975,6 +2002,33 @@ def _read_material_chunk(r: BinaryReader, size: int, rw_version: int) -> DffMate
 
     r.seek(end)
     return mat
+
+
+def _read_dk_plugin(r, size):
+    end = r.pos + size
+    if size < 16 or end > len(r.data):
+        raise ValueError('Truncated DK normal-map material')
+    kind = r.read_one('<I')
+    if kind not in (1, 49):
+        raise ValueError('Unsupported DK normal-map type: %d' % kind)
+
+    def texture():
+        if r.pos + 12 > end:
+            raise ValueError('Missing DK texture header')
+        ct, cs, _ = _read_chunk_header(r)
+        if ct != CHUNK_TEXTURE or r.pos + cs > end:
+            raise ValueError('Invalid DK texture chunk')
+        return _read_texture_chunk(r, cs)
+
+    normal = texture()
+    amount, reflection = 1.0, None
+    if kind == 49:
+        if r.pos + 4 > end:
+            raise ValueError('Missing DK reflection amount')
+        amount = r.read_one('<f')
+        reflection = texture()
+    r.seek(end)
+    return DKNormalMapEffect(normal, amount, reflection, kind)
 
 
 def _read_material_list(r: BinaryReader, matlist_size: int,

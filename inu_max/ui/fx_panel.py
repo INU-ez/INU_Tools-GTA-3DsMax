@@ -241,6 +241,7 @@ def _enum_combo(items):
 def _search_combo(tip):
     """Список с поиском по подстроке (как prop_search Blender)."""
     cb = QtWidgets.QComboBox()
+    cb.setProperty("inu_i18n_data", True)
     cb.setEditable(True)
     cb.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
     cb.setSizeAdjustPolicy(
@@ -639,6 +640,7 @@ class FxSettings(BuildMixin, QtWidgets.QWidget):
         box = self._box()
         box.addWidget(IconLabel("Particle Properties:", 'particles'))
         self._effect = _search_combo("Effect name from effects.fxp")
+        self._effect.setProperty("inu_i18n_data", True)
         self._effect.activated.connect(
             lambda _i: self._pick_effect(self._effect.currentText().strip()))
         self._effect.lineEdit().returnPressed.connect(

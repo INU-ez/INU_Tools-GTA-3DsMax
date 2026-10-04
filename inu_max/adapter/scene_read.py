@@ -418,7 +418,9 @@ def texture_sources(nodes):
         for flag, key in (('export_env_map', 'env_map_tex'),
                           ('export_bump_map', 'bump_map_tex'),
                           ('export_dual_tex', 'dual_tex_texture'),
-                          ('export_specular', 'specular_texture')):
+                          ('export_specular', 'specular_texture'),
+                          ('export_dk_normal_map', 'dk_normal_texture'),
+                          ('export_dk_normal_map', 'dk_reflection_texture')):
             name = _strip_ext(p.get(key, ''))
             if p.get(flag) and name:
                 path = _find_file(p[key], dirs)
@@ -463,7 +465,9 @@ def col_prim(o):
 
 def is_shadow(o):
     """Меш тени: тип SHA или имя «…_sha» (соглашение Kam's)."""
-    return (str(get_prop(o, 'type', '')).strip('"').upper() == 'SHA'
+    mat = getattr(o, 'material', None)
+    material_shadow = mat is not None and str(_rt().classOf(mat)).lower() in ('inu_gta_colshadow', 'gta_colshadow')
+    return (material_shadow or str(get_prop(o, 'type', '')).strip('"').upper() == 'SHA'
             or str(o.name).lower().endswith('_sha'))
 
 
@@ -506,7 +510,7 @@ def col_prim_data(o, version=1):
     try:
         if o.material is not None and not mat_ad.is_multi(o.material):
             surf = surface_of(mat_ad.props(o.material))
-            if version >= 2:
+            if version >= 2 and not mat_ad.is_col(o.material):
                 surf = (surf[0], surf[1], surf[3], clamp_light(get_prop(o, 'col_light', 0)))
     except Exception:                                  # noqa: BLE001
         pass

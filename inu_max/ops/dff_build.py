@@ -16,7 +16,7 @@ from typing import List, Optional
 from inu_gta_core.dff import (
     DffClump, DffFrame, DffGeometry, DffAtomic, DffMaterial, DffTexture,
     DffLight, Triangle, TexCoords, RGBA, BoundingSphere, SurfaceProperties,
-    BumpMapEffect, EnvMapEffect, SpecularMaterial, ReflectionMaterial,
+    BumpMapEffect, EnvMapEffect, SpecularMaterial, ReflectionMaterial, DKNormalMapEffect,
     DualTextureEffect, ExtraVertColors, UVAnim, UVAnimDict, UVAnimKeyframe,
     HAnimData, Extension2dfx, Light2dfx, GTA_SA_VERSION,
 )
@@ -123,8 +123,18 @@ def build_material(md: MatData) -> DffMaterial:
             filt = 0x11106
         m.texture = DffTexture(name=tex, mask=_strip_ext(p.get('mask_texture', '')),
                                filters=filt)
+    if p.get('export_dk_normal_map'):
+        normal = _strip_ext(p.get('dk_normal_texture', ''))
+        if not normal:
+            raise ValueError('DK Normal Map requires a normal texture')
+        m.dk_normal_map = DKNormalMapEffect(
+            normal_texture=DffTexture(name=normal),
+            reflection_amount=float(p.get('dk_reflection_amount', 1.0)),
+            reflection_texture=DffTexture(name=_strip_ext(p.get('dk_reflection_texture', ''))),
+            effect_type=int(p.get('dk_effect_type', 49)))
     if p.get('export_bump_map'):
         m.bump_map = BumpMapEffect()
+        m.bump_map.intensity = float(p.get('bump_map_intensity', 1.0))
         if p.get('bump_map_tex'):
             m.bump_map.bump_texture = DffTexture(name=_strip_ext(p['bump_map_tex']))
     if p.get('export_env_map'):

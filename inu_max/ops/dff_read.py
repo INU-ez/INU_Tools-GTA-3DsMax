@@ -136,8 +136,17 @@ def material(dm, uv_anims=None, index=0):
         p['tex_filter_hi'] = (f >> 16) & 0xFFFF
         if dm.texture.mask:
             p['mask_texture'] = dm.texture.mask
+    if dm.dk_normal_map is not None:
+        dk = dm.dk_normal_map
+        p.update(export_dk_normal_map=True, dk_reflection_amount=float(dk.reflection_amount),
+                 dk_effect_type=int(dk.effect_type))
+        for key, texture in (('dk_normal_texture', dk.normal_texture),
+                             ('dk_reflection_texture', dk.reflection_texture)):
+            if texture is not None:
+                p[key] = texture.name
     if dm.bump_map is not None:
         p['export_bump_map'] = True
+        p['bump_map_intensity'] = float(dm.bump_map.intensity)
         bt = getattr(dm.bump_map, 'bump_texture', None)
         if bt is not None and bt.name:
             p['bump_map_tex'] = bt.name

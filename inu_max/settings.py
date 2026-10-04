@@ -12,6 +12,7 @@ import json
 import os
 
 _DEFAULTS = {
+    'ui_language': 'EN',  # EN | RU
     'game': 'SA',            # 'SA' | 'VC' | 'III' — игра проекта (экспорт)
     'platform': 'PC',        # 'PC' | 'MOBILE'
 
@@ -25,6 +26,7 @@ _DEFAULTS = {
     'imp_f_ide': True,
     'imp_f_ipl': True,
     'import_weld_sharpen': False,  # «Стандартная модель GTA SA (vanilla)»
+    'import_material_type': 'STANDARD',  # STANDARD | GTA (bundled Kam/GoldFish GTA_Mtl)
     'import_2dfx': True,        # создавать 2DFX-эффекты из DFF
     'auto_txd': True,           # поиск картинок и TXD при импорте DFF
 

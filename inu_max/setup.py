@@ -220,6 +220,14 @@ def _startup_ms():
         if f != undefined do (root = trimRight (trimLeft (readLine f)); close f)
     )
     if root != undefined and doesFileExist (pathConfig.appendPath root "inu_boot.py") then (
+        local inuMaterial = pathConfig.appendPath root "inu_max\\GTA_Material.ms"
+        if GTA_Mtl == undefined and doesFileExist inuMaterial do fileIn inuMaterial
+        local inuColMaterial = pathConfig.appendPath root "inu_max\\GTA_COLplugin.ms"
+        if (GTA_COLSurface == undefined or GTA_COLShadow == undefined) and doesFileExist inuColMaterial do fileIn inuColMaterial
+        local inuLegacyMaterial = pathConfig.appendPath root "inu_max\\Legacy_GTA_Material.ms"
+        if INU_GTA_Mtl == undefined and doesFileExist inuLegacyMaterial do fileIn inuLegacyMaterial
+        local inuLegacyCol = pathConfig.appendPath root "inu_max\\Legacy_GTA_COLplugin.ms"
+        if (INU_GTA_COLSurface == undefined or INU_GTA_COLShadow == undefined) and doesFileExist inuLegacyCol do fileIn inuLegacyCol
         local libs = pathConfig.appendPath contents "python_libs"
         python.Execute ("import os, sys\np_lib = os.path.join(r'" + libs + "', 'py%d%d' % sys.version_info[:2])\nfor p in (p_lib, r'" + root + "'):\n    if p not in sys.path: sys.path.insert(0, p)")
         global INU_LAUNCHER_NO_OPEN = true
