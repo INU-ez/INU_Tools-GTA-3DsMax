@@ -301,10 +301,10 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
 
         auto = self._check(
             "Auto TXD", 'auto_txd', True,
-            "Load the model's TXD automatically on DFF import:\n"
-            "1. .txd files covering the DFF textures (max coverage first)\n"
-            "2. more .txd until all textures are found\n"
-            "A .txd selected in the same import is used as well.")
+            "Find textures in the model's folder and subfolders on DFF import:\n"
+            "PNG, DDS, TGA, BMP, JPG/JPEG and TIFF images by texture name.\n"
+            "Missing textures are extracted from matching TXD files.\n"
+            "A TXD explicitly selected in the same import has priority.")
         dxt = self._combo(
             'dxt_backend',
             [("Numpy", 'numpy',

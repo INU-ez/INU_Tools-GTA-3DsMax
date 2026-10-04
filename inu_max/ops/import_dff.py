@@ -17,7 +17,7 @@ from .. import settings
 def import_dff(filepath, auto_txd=True, extra_tex=None):
     """Импортировать .dff в текущую сцену Max. Возвращает (число мешей, текст).
 
-    auto_txd — искать нужный .txd в папке модели (coverage-подбор);
+    auto_txd — искать картинки и нужные .txd в папке модели и подпапках;
     extra_tex — {имя_текстуры.lower(): png} из .txd, выбранных вместе с DFF
     в общем импорте (имеют приоритет над найденными автоматически)."""
     rt = pymxs.runtime
@@ -41,7 +41,7 @@ def import_dff(filepath, auto_txd=True, extra_tex=None):
                       for m in (g.materials or []) if m.texture is not None and m.texture.name}
             tex_map = build_tex_map(filepath, needed)
         except Exception as e:                         # noqa: BLE001
-            print("[INU import_dff] извлечение TXD пропущено: %r" % (e,))
+            print("[INU import_dff] автопоиск текстур пропущен: %r" % (e,))
     mark("textures ready: %d" % len(tex_map))
     if extra_tex:
         tex_map = dict(tex_map)

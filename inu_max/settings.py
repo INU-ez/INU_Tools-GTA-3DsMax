@@ -26,7 +26,7 @@ _DEFAULTS = {
     'imp_f_ipl': True,
     'import_weld_sharpen': False,  # «Стандартная модель GTA SA (vanilla)»
     'import_2dfx': True,        # создавать 2DFX-эффекты из DFF
-    'auto_txd': True,           # авто-подбор TXD при импорте DFF
+    'auto_txd': True,           # поиск картинок и TXD при импорте DFF
 
     # — Экспорт (Export All INU) —
     'exp_dff': True,

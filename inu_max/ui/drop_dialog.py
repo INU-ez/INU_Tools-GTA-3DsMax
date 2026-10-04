@@ -68,7 +68,8 @@ def ask(parent=None, count=1, at_cursor=False):
         "ped attractors, sun glare, signs, etc.)."))
     lay.addWidget(check(
         "Auto TXD", 'auto_txd', True,
-        "Load the model's TXD automatically from the model's folder."))
+        "Find PNG, DDS, TGA, BMP, JPG/JPEG and TIFF images by texture name "
+        "in the model's folder and subfolders; use TXD for missing textures."))
     box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok
                                      | QtWidgets.QDialogButtonBox.Cancel)
     box.button(QtWidgets.QDialogButtonBox.Ok).setText("Import")

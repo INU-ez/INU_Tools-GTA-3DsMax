@@ -8,6 +8,7 @@ import os
 import re
 import struct
 import zlib
+from collections import deque
 
 try:
     import numpy as _np
@@ -255,6 +256,70 @@ def _png_map(out_dir):
             for f in os.listdir(out_dir) if f.lower().endswith('.png')}
 
 
+_IMAGE_EXTENSIONS = ('.png', '.dds', '.tga', '.bmp', '.tif', '.tiff', '.jpg', '.jpeg')
+
+
+def _loose_tex_map(root, needed, cache_dir, cap=20000):
+    """Match image names without decoding; nearer folders win, then format.
+
+    Cached PNGs are handled separately so old TXD colour corrections still
+    run. Keep the scan bounded and do not follow directory symlinks.
+    """
+    aliases = {}
+    for name in needed:
+        basename = name.replace('\\', '/').rsplit('/', 1)[-1]
+        aliases.setdefault(basename, set()).add(name)
+        stem, ext = os.path.splitext(basename)
+        if ext.lower() in _IMAGE_EXTENSIONS:
+            aliases.setdefault(stem, set()).add(name)
+    result, seen, visited = {}, 0, set()
+    pending = deque([root])
+    cache_dir = os.path.normcase(os.path.abspath(cache_dir))
+    while pending:
+        folder = pending.popleft()
+        real = os.path.normcase(os.path.realpath(folder))
+        if real in visited:
+            continue
+        visited.add(real)
+        try:
+            with os.scandir(folder) as iterator:
+                entries = sorted(iterator, key=lambda e: e.name.casefold())
+        except OSError:
+            continue
+        images = []
+        for entry in entries:
+            seen += 1
+            if seen > cap:
+                break
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name.lower() not in {'.git', '__pycache__'} and not entry.name.lower().startswith('_inu_probe'):
+                        pending.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    stem, ext = os.path.splitext(entry.name.lower())
+                    if ext not in _IMAGE_EXTENSIONS:
+                        continue
+                    if ext == '.png' and os.path.normcase(os.path.abspath(folder)) == cache_dir:
+                        continue
+                    images.append((_IMAGE_EXTENSIONS.index(ext), entry.name.casefold(), stem, entry.path))
+            except OSError:
+                continue
+        folder_matches = {}
+        for priority, filename, stem, path in sorted(images):
+            matches = aliases.get(stem, set()) | aliases.get(filename, set())
+            for name in matches:
+                score = (0 if name in aliases.get(filename, set()) else 1, priority, filename)
+                if name not in folder_matches or score < folder_matches[name][0]:
+                    folder_matches[name] = (score, path)
+            if not needed:
+                result.setdefault(stem, path)
+        for name, (_, path) in folder_matches.items():
+            result.setdefault(name, path)
+        if seen > cap or (needed and needed <= result.keys()):
+            break
+    return result
+
+
 def build_tex_map(dff_path, needed_names=None):
     """Собрать {имя_текстуры.lower(): путь_png} для модели через
     COVERAGE-подбор (как Blender): среди всех .txd в папке модели читаем
@@ -262,11 +327,13 @@ def build_tex_map(dff_path, needed_names=None):
     покрывают текстуры материалов модели. Так нужный .txd находится сам,
     даже если назван не как .dff (rodeo06 → TXD rodeo05_law2).
 
-    Плюс подхватываем уже лежащие PNG в <имя>_textures/."""
+    Отдельные картинки в папке модели и подпапках имеют приоритет над
+    автоматически извлечёнными PNG в <имя>_textures/."""
     root = os.path.dirname(dff_path)
     out_dir = os.path.join(
         root, os.path.splitext(os.path.basename(dff_path))[0] + "_textures")
     needed = set(n.lower() for n in (needed_names or []) if n)
+    loose = _loose_tex_map(root, needed, out_dir)
 
     # PNG уже извлечены прошлым импортом — TXD не трогаем. Папка прошлой
     # версии декода (без метки): покрывающие TXD проходятся ещё раз, но
@@ -277,8 +344,9 @@ def build_tex_map(dff_path, needed_names=None):
         if name not in have and safe in have:
             have[name] = have[safe]
     cur = _ver_ok(out_dir) or not have          # пустая папка — уже текущая
-    if cur and needed and needed <= set(have):
-        print("[INU tex] все %d текстур уже в %s" % (len(needed), out_dir))
+    have.update(loose)
+    if needed and (needed <= set(loose) or (cur and needed <= set(have))):
+        print("[INU tex] все %d текстур найдены в файлах и PNG-кэше" % len(needed))
         return have
 
     # (покрытие, путь, имена) по каждому .txd
@@ -292,7 +360,7 @@ def build_tex_map(dff_path, needed_names=None):
         # Жадно: сначала .txd с наибольшим покрытием, добираем пока не
         # закроем все нужные текстуры (модель может тянуть из нескольких).
         scored.sort(key=lambda x: -x[0])
-        remaining = needed - set(have) if cur else set(needed)
+        remaining = needed - set(have) if cur else needed - set(loose)
         for cov, txd, names in scored:
             if not remaining:
                 break
@@ -321,6 +389,7 @@ def build_tex_map(dff_path, needed_names=None):
         safe = _safe_name(name).lower()
         if name not in tex_map and safe in tex_map:
             tex_map[name] = tex_map[safe]
-    print("[INU tex] .txd найдено=%d, извлечено=%d → %d текстур в %s"
-          % (len(cands), n_txd, len(tex_map), out_dir))
+    tex_map.update(loose)
+    print("[INU tex] TXD found=%d, extracted=%d, loose images=%d -> %d textures in %s"
+          % (len(cands), n_txd, len(loose), len(tex_map), out_dir))
     return tex_map
