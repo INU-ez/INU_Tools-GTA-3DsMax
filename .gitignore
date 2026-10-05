@@ -12,6 +12,9 @@ dev/tests/e2e/localization_*.png
 dev/tests/e2e/localization_runtime_result.json
 dev/tests/e2e/localization_probe.ms
 dev/tests/e2e/material_localization_probe.ms
+dev/tests/e2e/bulk_import_*.log
+dev/tests/e2e/bulk_import_runtime_result.json
+dev/tests/e2e/bulk_import_probe.ms
 max_plugin/INU_Import.vcxproj
 max_plugin/INU_Import.cpp
 max_plugin/INU_FastMesh.cpp

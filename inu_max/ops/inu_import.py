@@ -9,6 +9,13 @@ import os
 _ORDER = ('.txd', '.dff', '.col', '.cst', '.ide', '.ipl')
 
 
+def _logged_files(kind, paths):
+    from ..diag import mark
+    for index, path in enumerate(paths, 1):
+        mark('%s %d/%d: %s' % (kind, index, len(paths), os.path.basename(path)))
+        yield path
+
+
 def import_files(paths, auto_txd=True):
     """Импортировать файлы по расширению. Возвращает текст отчёта."""
     from .import_dff import import_dff
@@ -22,7 +29,7 @@ def import_files(paths, auto_txd=True):
 
     lines = []
     extra_tex = {}
-    for p in by_ext['.txd']:
+    for p in _logged_files('TXD', by_ext['.txd']):
         try:
             m, _out = import_txd(p)
             extra_tex.update(m)
@@ -30,7 +37,7 @@ def import_files(paths, auto_txd=True):
         except Exception as e:                         # noqa: BLE001
             lines.append("TXD %s: error %s" % (os.path.basename(p), e))
 
-    for p in by_ext['.dff']:
+    for p in _logged_files('DFF', by_ext['.dff']):
         try:
             n, _msg = import_dff(p, auto_txd=auto_txd, extra_tex=extra_tex)
             lines.append("DFF %s: %d meshes" % (os.path.basename(p), n))
@@ -41,7 +48,7 @@ def import_files(paths, auto_txd=True):
     # встать на место одноимённых моделей
     from .import_col import import_col, import_cst, report_line
     for ext, fn, kind in (('.col', import_col, 'COL'), ('.cst', import_cst, 'CST')):
-        for p in by_ext[ext]:
+        for p in _logged_files(kind, by_ext[ext]):
             try:
                 lines.append(report_line(kind, p, fn(p)))
             except Exception as e:                     # noqa: BLE001
@@ -51,7 +58,7 @@ def import_files(paths, auto_txd=True):
 
     from .ipl_tools import import_ide, import_ipl
     for ext, fn in (('.ide', import_ide), ('.ipl', import_ipl)):
-        for path in by_ext[ext]:
+        for path in _logged_files(ext[1:].upper(), by_ext[ext]):
             try:
                 level, text = fn(path)
                 lines.append('%s %s: %s' % (ext[1:].upper(), os.path.basename(path), text))

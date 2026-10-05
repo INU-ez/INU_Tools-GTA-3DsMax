@@ -31,6 +31,11 @@ def _ensure_paths():
 
 
 def _reload_inu_max():
+    # Stop the previous diagnostics before dropping its module. Older releases
+    # armed a faulthandler watchdog and kept its log open after an import.
+    diagnostics = sys.modules.get('inu_max.diag')
+    if diagnostics is not None:
+        diagnostics.stop()
     # hot-reload только нашего пакета (ядро inu_gta_core не трогаем — тяжёлое).
     for name in [m for m in list(sys.modules) if m.split('.')[0] == 'inu_max']:
         del sys.modules[name]
