@@ -6,19 +6,24 @@ from functools import lru_cache
 from pathlib import Path
 
 _FILES = {'gta_mtl': 'GTA_Material.ms', 'gta_colsurface': 'GTA_COLplugin.ms',
-          'gta_colshadow': 'GTA_COLplugin.ms'}
+          'gta_colshadow': 'GTA_COLplugin.ms', 'inu_gta_mtl': 'Legacy_GTA_Material.ms',
+          'inu_gta_colsurface': 'Legacy_GTA_COLplugin.ms',
+          'inu_gta_colshadow': 'Legacy_GTA_COLplugin.ms'}
+_ROLLOUTS = {'inu_gta_mtl': 'mainUI', 'inu_gta_colsurface': 'colUI',
+             'inu_gta_colshadow': 'colUI'}
 _ACTIVE = None
 _LAST_POLL = 0
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=6)
 def definition(class_name):
     source = (Path(__file__).parent/_FILES[class_name]).read_text(encoding='utf-8-sig', errors='replace')
-    block = next(s for s in re.split(r'(?=plugin Material )', source)
-                 if s.lower().startswith('plugin material '+class_name+'\n') or
-                 s.lower().startswith('plugin material '+class_name+'\r\n'))
+    block = next(s for s in re.split(r'(?=plugin\s+material\s+)', source, flags=re.I)
+                 if re.match(r'plugin\s+material\s+'+class_name+r'\b', s, re.I))
+    bindings = {control: field for field, control in re.findall(
+        r'^\s*(\w+)\s+type:[^\n]*?\bui:(\w+)', block, re.M|re.I)}
     controls = []
-    for match in re.finditer(r'^\s*(label|button|checkbox|spinner|dropdownlist|groupBox)\s+(\w+)\s+"((?:[^"\\]|\\.)*)"([^\n]*)', block, re.M|re.I):
+    for match in re.finditer(r'^\s*(label|button|checkbox|spinner|dropdownlist|groupBox|colorpicker|mapbutton)\s+(\w+)\s+"((?:[^"\\]|\\.)*)"([^\n]*)', block, re.M|re.I):
         kind, name, caption, tail = match.groups()
         caption = json.loads('"'+caption+'"')
         if 'By ' in caption or 'Thanks' in caption or 'GTAF' in caption:
@@ -26,32 +31,46 @@ def definition(class_name):
         tip = re.search(r'tooltip:"((?:[^"\\]|\\.)*)"', tail)
         items = re.search(r'items:#\(([^)]*)\)', tail)
         choices = re.findall(r'"([^"\n]*)"', items.group(1)) if items else None
-        controls.append((name, caption, json.loads('"'+tip.group(1)+'"') if tip else None, choices))
-    title = re.search(r'rollout\s+params\s+"([^"]*)"', block).group(1)
+        controls.append((name, caption, json.loads('"'+tip.group(1)+'"') if tip else None,
+                         choices, kind.lower(), bindings.get(name)))
+    title = re.search(r'rollout\s+'+_ROLLOUTS.get(class_name, 'params')+r'\s+"([^"]*)"', block, re.I).group(1)
     groups = re.findall(r'\bgroup\s+"([^"]*)"', block)
     return title, controls, groups
 
 
 def localize_material(mat):
     from pymxs import runtime as rt
-    from .i18n import tr, _translate
+    from .i18n import tr, _translate, language
     class_name = str(rt.classOf(mat)).lower()
     if class_name not in _FILES:
         return False
     title, controls, groups = definition(class_name)
-    rollout = mat.params
+    rollout = getattr(mat, _ROLLOUTS.get(class_name, 'params'))
     rollout.title = tr(title)
-    for name, caption, tip, choices in controls:
+    named_controls = []
+    for name, caption, tip, choices, kind, field in controls:
         control = getattr(rollout, name)
-        if caption:control.caption = tr(caption)
+        named_controls.append(control)
+        if kind == 'mapbutton':
+            # A populated button displays a map name, which is user data.
+            if field and getattr(mat, field) is None:
+                control.caption = tr('None')
+        elif caption:
+            control.caption = tr(caption)
+        if field == 'dif' and kind == 'spinner':
+            control.caption = 'Дифф.' if language() == 'RU' else caption
+        if class_name == 'gta_mtl' and language() == 'RU' and name in ('infodkN', 'infodkN2'):
+            control.caption = 'Нормали' if name == 'infodkN' else 'Отражение'
+        if class_name == 'gta_mtl' and name in ('lbl_t1', 'lbl_t2'):
+            control.caption = ''
         if tip:control.tooltip = tr(tip)
         if choices:
-            field = {'colhpr':'colhprIdx', 'fxtype_':'matEffect',
-                     'srcblend_':'p_srcblend', 'destblend_':'p_destblend'}.get(name)
             selected = int(getattr(mat, field)) if field else int(control.selection)
             control.items = rt.Array(*(tr(choice) for choice in choices))
             control.selection = selected
     for control in rollout.controls:
+        if any(control == named for named in named_controls):
+            continue
         # Anonymous group boxes have no script variable. Match only group titles.
         for original in groups:
             if str(control.caption) in (original, _translate(original, 'RU')):
@@ -77,7 +96,11 @@ def refresh_editor(force=False):
         if mat is None or str(rt.classOf(mat)).lower() not in _FILES:
             _ACTIVE = None
             return
-        key = int(rt.getHandleByAnim(mat)), str(mat.params.hwnd), language()
+        class_name = str(rt.classOf(mat)).lower()
+        rollout = getattr(mat, _ROLLOUTS.get(class_name, 'params'))
+        empty_maps = tuple(getattr(mat, field) is None for _, _, _, _, kind, field
+                           in definition(class_name)[1] if kind == 'mapbutton' and field)
+        key = int(rt.getHandleByAnim(mat)), str(rollout.hwnd), language(), empty_maps
         if force or key!=_ACTIVE:
             localize_material(mat)
             _ACTIVE = key

@@ -515,7 +515,17 @@ class INUToolsPanel(BuildMixin, QtWidgets.QWidget):
         gen = diag.start("import %d file(s)" % len(paths))
         diag.mark("import start")
         from inu_max.ops.inu_import import import_files
-        report = import_files(paths, auto_txd=bool(self._get('auto_txd', True)))
+        from .import_progress import FileImportProgress
+        from contextlib import nullcontext
+        total = sum(os.path.splitext(path)[1].lower() in self._DROP_EXT for path in paths)
+        context = FileImportProgress(self, total) if total > 1 else nullcontext()
+        try:
+            with context as progress:
+                report = import_files(paths, auto_txd=bool(self._get('auto_txd', True)),
+                                      progress=progress.update_progress if progress else None)
+        except Exception:
+            diag.stop(gen)
+            raise
         diag.mark("import done")
         self._sync_from_settings()        # pipeline and object flags after import
         # отчёт — НЕмодально: модальный цикл Qt поверх Max мешал Max догружать

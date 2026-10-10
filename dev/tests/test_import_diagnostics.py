@@ -61,3 +61,32 @@ class ImportDiagnosticsTests(unittest.TestCase):
             self.assertEqual(list(_logged_files('DFF', paths)), paths)
             self.assertEqual([call.args[0] for call in mark.call_args_list],
                              ['DFF 1/2: first.dff', 'DFF 2/2: second.dff'])
+
+    def test_progress_spans_formats_and_reaches_completion(self):
+        state = {'done': 0, 'total': 3, 'cancelled': False}
+        progress = Mock(return_value=True)
+        with patch.object(diag, 'mark'):
+            self.assertEqual(list(_logged_files('TXD', ['a.txd'], progress, state)), ['a.txd'])
+            self.assertEqual(list(_logged_files('DFF', ['a.dff', 'b.dff'], progress, state)),
+                             ['a.dff', 'b.dff'])
+        self.assertEqual([call.args[0] for call in progress.call_args_list], [0,1,1,2,2,3])
+        self.assertEqual(state['done'], 3)
+        self.assertFalse(state['cancelled'])
+
+    def test_cancel_keeps_completed_file_and_skips_later_formats(self):
+        state = {'done': 0, 'total': 3, 'cancelled': False}
+        progress = Mock(side_effect=[True, False])
+        with patch.object(diag, 'mark'):
+            self.assertEqual(list(_logged_files('DFF', ['a.dff', 'b.dff'], progress, state)),
+                             ['a.dff'])
+            self.assertEqual(list(_logged_files('COL', ['a.col'], progress, state)), [])
+        self.assertEqual(state['done'], 1)
+        self.assertTrue(state['cancelled'])
+
+    def test_cancel_before_first_file_and_at_completion(self):
+        with patch.object(diag, 'mark'):
+            self.assertEqual(list(_logged_files('DFF', ['a.dff'], lambda *args: False)), [])
+            state = {'done': 0, 'total': 1, 'cancelled': False}
+            self.assertEqual(list(_logged_files('DFF', ['a.dff'],
+                                               Mock(side_effect=[True, False]), state)), ['a.dff'])
+            self.assertFalse(state['cancelled'])

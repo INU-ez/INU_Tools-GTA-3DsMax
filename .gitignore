@@ -1,9 +1,16 @@
 *.pyc
+dev/tests/e2e/.tmp-tests/
 dev/tests/e2e/ik_*.log
 dev/tests/e2e/ik_runtime_result.json
 dev/tests/e2e/ik_roundtrip.max
 dev/tests/e2e/ik_roundtrip.max.bak
 dev/tests/e2e/material_*.log
+dev/tests/e2e/material_ui_*.png
+dev/tests/e2e/material_progress_*.png
+dev/tests/e2e/material_ui_runtime_result.json
+dev/tests/e2e/material_ui_probe.ms
+dev/tests/e2e/material_ui_interactive.ms
+dev/tests/e2e/material_ui_profile/
 dev/tests/e2e/material_runtime_result.json
 dev/tests/e2e/material_roundtrip.max*
 dev/tests/e2e/material_probe.ms

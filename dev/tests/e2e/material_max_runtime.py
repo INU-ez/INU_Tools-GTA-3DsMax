@@ -111,7 +111,7 @@ try:
     settings._STATE['ui_language']='RU'
     before=M.props(dkmat)
     assert localize_material(dkmat)
-    assert str(dkmat.params.infodkN.caption)=='Карта нормалей'
+    assert str(dkmat.params.infodkN.caption)=='Нормали'
     assert int(dkmat.matEffect)==6 and M.props(dkmat)==before
     assert localize_material(colnode.material)
     assert str(colnode.material.params.msur.caption)=='Поверхность: '

@@ -41,37 +41,53 @@ on use_SI set value do delegate.specularMapEnable=value
 )
 rollout mainUI "GTA Parameters"
 (
-label description "INU GTA / RenderWare material"
+label description "INU GTA / RenderWare material" width:315
+label slot_label "Vehicle color" pos:[10,35] width:95
+dropdownlist ui_slot "" pos:[115,32] width:200 items:#("None", "Primary", "Secondary", "Third", "Fourth", "Left headlight", "Right headlight", "Left taillight", "Right taillight")
 group "Main" (
-dropdownlist ui_slot "Vehicle color" items:#("None", "Primary", "Secondary", "Third", "Fourth", "Left headlight", "Right headlight", "Left taillight", "Right taillight")
-colorpicker ui_color "Color"
-spinner ui_amb "Ambient" range:[0,1,1] type:#float fieldwidth:55
-spinner ui_spc "Specular" range:[0,1,0] type:#float fieldwidth:55
-spinner ui_dif "Diffuse" range:[0,1,1] type:#float fieldwidth:55
-spinner ui_alpha "Alpha" range:[0,255,255] type:#integer fieldwidth:55
+label main_space ""
+spinner ui_amb "Ambient" pos:[10,80] width:95 range:[0,1,1] type:#float fieldwidth:45
+spinner ui_spc "Specular" pos:[115,80] width:95 range:[0,1,0] type:#float fieldwidth:45
+spinner ui_dif "Diffuse" pos:[220,80] width:95 range:[0,1,1] type:#float fieldwidth:45
+label color_label "Color" pos:[10,108] width:55
+colorpicker ui_color "" pos:[65,103] width:45 height:21
+checkbox ui_use_colormap "" pos:[130,105]
+mapbutton ui_colormap "None" pos:[150,103] width:165
+label alpha_label "Alpha" pos:[10,133] width:55
+spinner ui_alpha "" pos:[65,130] range:[0,255,255] type:#integer fieldwidth:45
+checkbox ui_use_alphamap "" pos:[130,130]
+mapbutton ui_alphamap "None" pos:[150,128] width:165
 )
-group "Effects" (
-spinner ui_Reflection "Environment strength" range:[0,100,100] type:#float fieldwidth:55
-spinner ui_spec_power "Specular strength" range:[0,100,100] type:#float fieldwidth:55
-spinner ui_blend "SA reflection intensity" range:[0,1,0] type:#float fieldwidth:55
-spinner ui_p_srcblend "Source blend" range:[1,11,5] type:#integer fieldwidth:55
-spinner ui_p_destblend "Destination blend" range:[1,11,6] type:#integer fieldwidth:55
-spinner ui_matEffect "Effect type (1-5)" range:[1,5,1] type:#integer fieldwidth:55
-checkbox ui_use_colormap "Diffuse texture" checked:true
-checkbox ui_use_alphamap "Alpha texture" checked:true
-checkbox ui_use_RF "Export environment map" checked:false
-checkbox ui_use_SI "Export specular" checked:false
-checkbox ui_use_SAS "Export SA reflection" checked:false
-mapbutton ui_colormap "Diffuse" width:220
-mapbutton ui_alphamap "Alpha" width:220
-mapbutton ui_reflectionmap "Environment" width:220
-mapbutton ui_bumpMap "Bump" width:220
-mapbutton ui_specularmap "Specular" width:220
-mapbutton ui_dualMap "Dual texture" width:220
+group "Material Effects" (
+label type_label "TYPE:" pos:[10,183] width:45
+dropdownlist ui_matEffect "" pos:[56,180] width:260 height:21 items:#("NONE","Reflection map","Bump map","Reflection + Bump map","Dual map")
+checkbox ui_use_RF "Reflection Export" pos:[10,205] width:300
+label reflection_label "Reflection" pos:[10,233] width:55
+spinner ui_Reflection "" pos:[65,230] range:[0,100,100] type:#float fieldwidth:45
+mapbutton ui_reflectionmap "None" pos:[150,227] width:165
+label bump_title "BUMP Export" pos:[10,263] width:305
+label bump_label "Bump" pos:[10,290] width:100
+mapbutton ui_bumpMap "None" pos:[150,286] width:165
+label dual_title "DUAL Texture Export" pos:[10,325] width:305
+label source_label "Source blend" pos:[10,350] width:95
+dropdownlist ui_p_srcblend "" pos:[110,345] width:205 height:21 items:#("rpBLENDZERO", "rpBLENDONE", "rpBLENDSRCCOLOR", "rpBLENDINVSRCCOLOR", "rpBLENDSRCALPHA", "rpBLENDINVSRCALPHA", "rpBLENDDESTALPHA", "rpBLENDINVDESTALPHA", "rpBLENDDESTCOLOR", "rpBLENDINVDESTCOLOR", "rpBLENDSRCALPHASAT")
+label destination_label "Destination blend" pos:[10,379] width:95
+dropdownlist ui_p_destblend "" pos:[110,373] width:205 height:21 items:#("rpBLENDZERO", "rpBLENDONE", "rpBLENDSRCCOLOR", "rpBLENDINVSRCCOLOR", "rpBLENDSRCALPHA", "rpBLENDINVSRCALPHA", "rpBLENDDESTALPHA", "rpBLENDINVDESTALPHA", "rpBLENDDESTCOLOR", "rpBLENDINVDESTCOLOR", "rpBLENDSRCALPHASAT")
+mapbutton ui_dualMap "None" pos:[10,408] width:305
 )
-label help "Effects: 1 None, 2 Env, 3 Bump, 4 Both, 5 Dual"
-button generic "Other default" across:2
-button vehicle "SA Vehicle default"
+group "Specular Image" (
+checkbox ui_use_SI "Export Specular Image section" pos:[10,454] width:305
+label specular_label "Glossiness" pos:[10,484] width:55
+spinner ui_spec_power "" pos:[65,484] range:[0,100,100] type:#float fieldwidth:45
+mapbutton ui_specularmap "None" pos:[150,479] width:165
+)
+group "SA Specular" (
+checkbox ui_use_SAS "Export SA Specular section" pos:[10,530] width:305
+label blend_label "SA reflection intensity" pos:[10,560] width:210
+spinner ui_blend "" pos:[225,557] range:[0,1,0] type:#float fieldwidth:55
+)
+button generic "Other default" width:145 across:2
+button vehicle "SA Vehicle default" width:145
 on ui_slot selected index do (
 local colors=#([255,255,255], [60,255,0], [255,0,175], [0,255,255], [255,0,255], [255,175,0], [0,255,200], [185,255,0], [255,60,0])
 local tint=copy white
