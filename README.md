@@ -24,6 +24,8 @@
 
 ## ✨ Highlights
 
+**Documentation:** [3ds Max user guide](docs/USER_GUIDE.md) · [Руководство на русском](docs/USER_GUIDE_rus.md) — installation, model and map workflows, materials, IK and troubleshooting.
+
 - 🧠 **One core for Blender and Max** — `inu_gta_core` is pure Python (no `bpy`, no `pymxs`): readers/writers for
   DFF, TXD, COL, IFP, IDE, IPL, IMG, `timecyc.dat`, `water.dat`, `map.zon`, `effects.fxp` and the lints built from
   the engine rules. Core updates are synchronized between the repositories.

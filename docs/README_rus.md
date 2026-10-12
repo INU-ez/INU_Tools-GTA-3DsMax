@@ -24,6 +24,8 @@
 
 ## ✨ Возможности
 
+**Документация:** [Руководство для 3ds Max](USER_GUIDE_rus.md) · [English guide](USER_GUIDE.md) — установка, работа с моделями и картами, материалы, IK и решение ошибок.
+
 - 🧠 **Одно ядро для Blender и Max** — `inu_gta_core` на чистом Python (без `bpy` и `pymxs`): чтение/запись DFF,
   TXD, COL, IFP, IDE, IPL, IMG, `timecyc.dat`, `water.dat`, `map.zon`, `effects.fxp` и линты по правилам движка.
   Обновления ядра синхронизируются между репозиториями.
